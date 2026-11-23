@@ -37,7 +37,9 @@ def test_ships_no_slideio_library():
 def test_one_slideio_copy():
     # SlideIO's own libraries only: slideio/core/libs also ships the MSVC runtime, which
     # python.exe has already loaded from its own directory before slideio is imported.
-    theirs = {f.lower() for f in os.listdir(_slideio_libs()) if f.lower().startswith("slideio")}
+    # Strip "lib" first: on Linux and macOS they are libslideio-*.so / .dylib.
+    theirs = {f.lower() for f in os.listdir(_slideio_libs())
+              if f.lower().removeprefix("lib").startswith("slideio")}
     loaded = [p for p in loaded_library_paths() if os.path.basename(p).lower() in theirs]
     assert loaded                               # SlideIO is loaded at all
     for p in loaded:
