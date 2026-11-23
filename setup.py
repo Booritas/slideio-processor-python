@@ -96,6 +96,10 @@ class CMakeBuild(build_ext):
             "-DCMAKE_BUILD_TYPE=" + CONFIG,
             "-DPython_EXECUTABLE=" + sys.executable,
             "-Dpybind11_DIR=" + pybind11.get_cmake_dir(),
+            # Always passed, so a build directory configured for tests does not keep the
+            # helpers in a later release build.
+            "-DSLIDEIO_PROCESSOR_PYTHON_TEST_HELPERS="
+            + ("ON" if os.environ.get("SLIDEIO_PROCESSOR_PYTHON_TEST_HELPERS") == "1" else "OFF"),
         ]
         if platform.system() == "Windows":
             cmake_args += ["-G", "Visual Studio 17 2022", "-A", "x64"]

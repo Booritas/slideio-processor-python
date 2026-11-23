@@ -28,3 +28,10 @@ def blob_slide(tmp_path):
     path = tmp_path / "slide.png"
     image.save(path)
     return path
+
+
+@pytest.fixture
+def three_stage_json():
+    """The C++ test's three-stage pipeline file: tissue, nuclei within tissue, and a prob raster."""
+    with open(os.path.join(_tests_dir, "data", "three_stage.json"), encoding="utf-8") as f:
+        return f.read()

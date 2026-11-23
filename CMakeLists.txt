@@ -38,7 +38,17 @@ add_subdirectory(extern/slideio-processor)
 find_package(Python 3.9 COMPONENTS Interpreter Development.Module REQUIRED)
 find_package(pybind11 CONFIG REQUIRED)
 
-pybind11_add_module(slideio_processor_native src/module.cpp)
+# Native helpers that only the tests call, such as one that throws a plain std::exception.
+# setup.py turns this on when SLIDEIO_PROCESSOR_PYTHON_TEST_HELPERS=1; release builds leave it off.
+option(SLIDEIO_PROCESSOR_PYTHON_TEST_HELPERS "Build the native helpers the tests use" OFF)
+
+pybind11_add_module(slideio_processor_native
+    src/module.cpp
+    src/errors.cpp
+    src/pipeline_file.cpp)
 target_link_libraries(slideio_processor_native PRIVATE
     slideio-processor-engine
     slideio-processor-data)
+if(SLIDEIO_PROCESSOR_PYTHON_TEST_HELPERS)
+    target_compile_definitions(slideio_processor_native PRIVATE SLIDEIO_PROCESSOR_PYTHON_TEST_HELPERS)
+endif()
