@@ -109,6 +109,38 @@ def test_progress_exception_cancels_and_propagates(blob_slide, three_stage_json,
     assert not _leftovers(tmp_path / "out")
 
 
+def test_progress_exception_keeps_context_inside_except_block(blob_slide, three_stage_json, tmp_path):
+    def progress(*args):
+        1 / 0
+
+    with pytest.raises(ZeroDivisionError) as info:
+        try:
+            raise ValueError("handled")
+        except ValueError:
+            _run(blob_slide, tmp_path, three_stage_json).run(progress=progress)
+    assert isinstance(info.value.__context__, CancelledError)
+
+
+def test_keyboard_interrupt_cancels_inside_except_block(blob_slide, three_stage_json, tmp_path):
+    c = Cancellation()
+    fired = []
+
+    def progress(*args):
+        if not fired:
+            fired.append(True)
+            _thread.interrupt_main()
+            deadline = time.monotonic() + 30
+            while not c.cancelled and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+    with pytest.raises(KeyboardInterrupt) as info:
+        try:
+            raise ValueError("handled")
+        except ValueError:
+            _run(blob_slide, tmp_path, three_stage_json).run(progress=progress, cancellation=c)
+    assert isinstance(info.value.__cause__, CancelledError)
+
+
 def test_keyboard_interrupt_cancels(blob_slide, three_stage_json, tmp_path):
     c = Cancellation()
     fired = []

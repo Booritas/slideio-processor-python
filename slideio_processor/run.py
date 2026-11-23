@@ -111,6 +111,13 @@ class SlideRun:
             raise KeyboardInterrupt from outcome.get("error")
         t.join()
         if "error" in outcome:
-            raise outcome.pop("error")
+            error = outcome.pop("error")
+            # Raising here chains implicitly to any exception the caller is handling and
+            # would replace the context the run set (the CancelledError); put it back.
+            context = error.__context__
+            try:
+                raise error
+            finally:
+                error.__context__ = context
         stages, exports = outcome["result"]
         return SlideRunResult(tuple(StageResult(*s) for s in stages), tuple(ExportResult(*e) for e in exports))
