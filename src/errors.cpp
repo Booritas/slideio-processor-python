@@ -12,7 +12,6 @@ namespace {
 
 namespace sp = slideio::processor;
 
-// Never what(): a third-party message can hold a path (C-6).
 constexpr const char* kUnexpected = "an unexpected native error occurred";
 
 // Builds the exception with slideio_processor.errors._from_native and sets it as the
@@ -28,8 +27,11 @@ void raise(int32_t code, const char* message, const char* stage, const char* ope
     }
 }
 
-void raiseInternal() {
-    raise(static_cast<int32_t>(sp::ErrorCode::Internal), kUnexpected, "", "", "", false, 0, 0);
+// what() is appended to the fixed prefix; an empty what() leaves the bare prefix.
+void raiseInternal(const char* what) {
+    std::string message = kUnexpected;
+    if (what != nullptr && *what != '\0') message += std::string(": ") + what;
+    raise(static_cast<int32_t>(sp::ErrorCode::Internal), message.c_str(), "", "", "", false, 0, 0);
 }
 
 } // namespace
@@ -42,10 +44,10 @@ void setNativeError(std::exception_ptr p) {
               e.tileX(), e.tileY());
     } catch (const std::bad_alloc&) {
         PyErr_NoMemory();
-    } catch (const std::exception&) {
-        raiseInternal();
+    } catch (const std::exception& e) {
+        raiseInternal(e.what());
     } catch (...) {
-        raiseInternal();
+        raiseInternal(nullptr);
     }
 }
 

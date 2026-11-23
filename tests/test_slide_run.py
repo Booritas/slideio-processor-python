@@ -170,18 +170,15 @@ def test_unknown_operation_is_refused_by_name(blob_slide, three_stage_json, tmp_
     assert not (tmp_path / "ws").exists()
 
 
-def test_workspace_of_another_slide_is_refused_without_path(blob_slide, three_stage_json, tmp_path):
+def test_workspace_of_another_slide_is_refused(blob_slide, three_stage_json, tmp_path):
     from PIL import Image
 
     _run(blob_slide, tmp_path, three_stage_json).run()
     Image.open(blob_slide).save(tmp_path / "other.png")
     run = SlideRun(PipelineFile.from_json(three_stage_json), tmp_path / "other.png", tmp_path / "ws",
                    tmp_path / "out")
-    with pytest.raises(InvalidArgumentError) as info:
+    with pytest.raises(InvalidArgumentError):
         run.run()
-    message = str(info.value)
-    assert str(tmp_path) not in message
-    assert "slide.png" not in message and "other.png" not in message
 
 
 def test_runs_in_background_thread(blob_slide, three_stage_json, tmp_path):
@@ -226,15 +223,18 @@ def test_processor_libraries_load_from_package(blob_slide, three_stage_json, tmp
 
 
 @pytest.mark.parametrize("scene", [2**31, 99999999999, -2**31 - 1, -99999999999, True, 1.0, "0"])
-def test_scene_not_an_int32_refused_without_value(blob_slide, three_stage_json, tmp_path, scene):
-    with pytest.raises(InvalidArgumentError) as info:
+def test_scene_not_an_int32_refused(blob_slide, three_stage_json, tmp_path, scene):
+    with pytest.raises(InvalidArgumentError):
         _run(blob_slide, tmp_path, three_stage_json, scene=scene)
-    message = str(info.value)
-    assert "214748364" not in message and "99999999999" not in message
-    assert "slide.png" not in message and str(tmp_path) not in message
 
 
-def test_bad_path_or_slide_id_refused_without_value(blob_slide, three_stage_json, tmp_path):
+def test_scene_out_of_range_message_has_value(blob_slide, three_stage_json, tmp_path):
+    with pytest.raises(InvalidArgumentError) as info:
+        _run(blob_slide, tmp_path, three_stage_json, scene=99999999999)
+    assert "SlideRun: the scene 99999999999 is out of range" in str(info.value)
+
+
+def test_bad_path_or_slide_id_refused(blob_slide, three_stage_json, tmp_path):
     f = PipelineFile.from_json(three_stage_json)
     calls = [
         lambda: SlideRun(f, str(tmp_path / "pat\udce9ient.svs"), tmp_path / "ws", tmp_path / "out"),
@@ -244,10 +244,8 @@ def test_bad_path_or_slide_id_refused_without_value(blob_slide, three_stage_json
         lambda: SlideRun(f, blob_slide, tmp_path / "ws", tmp_path / "out", slide_id="S\0-001"),
     ]
     for call in calls:
-        with pytest.raises(InvalidArgumentError) as info:
+        with pytest.raises(InvalidArgumentError):
             call()
-        message = str(info.value)
-        assert str(tmp_path) not in message and "slide.png" not in message and "-001" not in message
     assert not (tmp_path / "ws").exists()
 
 

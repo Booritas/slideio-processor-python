@@ -74,12 +74,12 @@ class SlideRun:
 
     def __init__(self, pipeline, slide, workspace, out, *, scene=0, slide_id=""):
         # Outside int32, pybind11's conversion would fail with a TypeError that
-        # repeats every argument, paths included; refuse here with fixed text.
+        # repeats every argument; refuse here with a clean message.
         # Negative scenes inside int32 are refused by the library, with its own message.
         if isinstance(scene, bool) or not isinstance(scene, int):
-            raise InvalidArgumentError("SlideRun: the scene must be an int")
+            raise InvalidArgumentError(f"SlideRun: the scene must be an int, got {scene!r}")
         if not _INT32_MIN <= scene <= _INT32_MAX:
-            raise InvalidArgumentError("SlideRun: the scene is out of range")
+            raise InvalidArgumentError(f"SlideRun: the scene {scene} is out of range")
         self._run = _native._SlideRun(pipeline._file, _path_string(slide), scene, _path_string(workspace),
                                       _path_string(out), _text(slide_id, "the slide id"))
         self._lock = threading.Lock()

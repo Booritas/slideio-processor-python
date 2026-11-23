@@ -25,17 +25,8 @@ class _Progress:
             print(f"{name}: {decile * 10}%", file=self._stream, flush=True)
 
 
-class _Parser(argparse.ArgumentParser):
-    """An ArgumentParser whose usage errors print fixed text: argparse's own messages
-    repeat the offending argument, which may be a path. Subparsers inherit the class."""
-
-    def error(self, message):
-        print("usage error: run 'slideio-processor run --help'", file=sys.stderr)
-        sys.exit(2)
-
-
 def _build_parser():
-    parser = _Parser(prog="slideio-processor")
+    parser = argparse.ArgumentParser(prog="slideio-processor")
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser("run", help="run a pipeline file against one slide scene")
     run.add_argument("--pipeline", required=True, help="pipeline JSON file")
@@ -73,7 +64,7 @@ def main(argv=None):
     except ProcessorError as error:
         print(f"error: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
-    except Exception as error:  # noqa: BLE001  (its text may carry a path: print the class only)
-        print(f"error: {type(error).__name__}", file=sys.stderr)
+    except Exception as error:  # noqa: BLE001  (no traceback: class and message only)
+        print(f"error: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
     return 0

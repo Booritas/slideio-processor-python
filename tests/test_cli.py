@@ -1,4 +1,3 @@
-import os
 import re
 import subprocess
 import sys
@@ -46,7 +45,7 @@ def test_progress_on_stderr(tmp_path, pipeline_path, blob_slide, capsys):
     assert all(re.fullmatch(r".+: \d+%", line) for line in err)
 
 
-def test_cli_errors_name_no_path(tmp_path, pipeline_path, blob_slide, capsys):
+def test_cli_errors_exit_1(tmp_path, pipeline_path, blob_slide, capsys):
     other = tmp_path / "other_secret.png"
     other.write_bytes(blob_slide.read_bytes())
     assert main(_args(tmp_path, pipeline_path, blob_slide, "bound", "o1", "--quiet")) == 0
@@ -61,43 +60,32 @@ def test_cli_errors_name_no_path(tmp_path, pipeline_path, blob_slide, capsys):
         captured = capsys.readouterr()
         assert captured.err.startswith("error: ")
         assert re.match(r"error: \w+Error: ", captured.err)
-        for text in (captured.out, captured.err):
-            assert str(tmp_path) not in text
-            for arg in argv[1:]:
-                if os.path.isabs(arg):
-                    assert os.path.basename(arg) not in text
 
 
 def test_usage_error_exits_2(capsys):
     with pytest.raises(SystemExit) as info:
         main(["run"])
     assert info.value.code == 2
-    assert capsys.readouterr().err == "usage error: run 'slideio-processor run --help'\n"
+    assert "required" in capsys.readouterr().err
 
 
-def test_usage_error_names_no_path(tmp_path, pipeline_path, blob_slide, capsys):
+def test_usage_error_prints_argparse_message(tmp_path, pipeline_path, blob_slide, capsys):
     stray = tmp_path / "stray_secret_dir" / "patient_slide.svs"
     with pytest.raises(SystemExit) as info:
         main(_args(tmp_path, pipeline_path, blob_slide, "ws", "out", "--quiet", str(stray)))
     assert info.value.code == 2
-    captured = capsys.readouterr()
-    for text in (captured.out, captured.err):
-        assert "stray_secret_dir" not in text and "patient_slide" not in text
-        assert str(tmp_path) not in text
+    assert "unrecognized arguments" in capsys.readouterr().err
 
 
-def test_scene_out_of_int32_names_no_path(tmp_path, pipeline_path, blob_slide, capsys):
+def test_scene_out_of_int32_exits_1(tmp_path, pipeline_path, blob_slide, capsys):
     argv = _args(tmp_path, pipeline_path, blob_slide, "ws", "out", "--scene", "99999999999", "--quiet")
     assert main(argv) == 1
     captured = capsys.readouterr()
     assert captured.err.startswith("error: ")
-    for text in (captured.out, captured.err):
-        assert "99999999999" not in text
-        assert str(tmp_path) not in text
-        assert "slide.png" not in text and "three_stage.json" not in text
+    assert "the scene 99999999999 is out of range" in captured.err
 
 
-def test_unexpected_error_prints_class_name_only(tmp_path, pipeline_path, blob_slide, capsys, monkeypatch):
+def test_unexpected_error_prints_class_and_message(tmp_path, pipeline_path, blob_slide, capsys, monkeypatch):
     from slideio_processor import cli
 
     def boom(args):
@@ -106,7 +94,7 @@ def test_unexpected_error_prints_class_name_only(tmp_path, pipeline_path, blob_s
     monkeypatch.setattr(cli, "_run", boom)
     assert main(_args(tmp_path, pipeline_path, blob_slide, "ws", "out", "--quiet")) == 1
     captured = capsys.readouterr()
-    assert captured.err == "error: RuntimeError\n"
+    assert captured.err == f"error: RuntimeError: failed on {blob_slide}\n"
     assert captured.out == ""
 
 

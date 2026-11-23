@@ -1,7 +1,7 @@
 """The exceptions slideio_processor raises: one class per C++ ErrorCode.
 
 The native translator builds them with _from_native. A message comes from the library or
-is fixed text, so it carries no path, slide name or slide value.
+is text this package writes; it may carry a path or an argument value.
 """
 import enum
 

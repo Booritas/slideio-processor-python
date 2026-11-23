@@ -23,16 +23,16 @@ _KINDS = (ExportKind.CSV, ExportKind.GEOJSON, ExportKind.LABEL_MASK, ExportKind.
 
 # Every str reaches the native module through _text or _path_string. A str pybind11
 # cannot convert would raise a TypeError that repeats every argument, and a NUL would
-# truncate the C string; both are refused here with fixed text that echoes no value.
+# truncate the C string; both are refused here, the message naming the offending value with repr().
 def _text(value, what="a name"):
     if not isinstance(value, str):
         raise TypeError(f"{what} must be a str")
     try:
         value.encode("utf-8")
     except UnicodeEncodeError:
-        raise InvalidArgumentError(f"{what} is not valid Unicode text") from None
+        raise InvalidArgumentError(f"{what}: text is not valid Unicode: {value!r}") from None
     if "\0" in value:
-        raise InvalidArgumentError(f"{what} contains a NUL character")
+        raise InvalidArgumentError(f"{what}: text contains a NUL character: {value!r}")
     return value
 
 

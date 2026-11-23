@@ -58,5 +58,6 @@ cd <an empty directory outside the checkout>; python -m pytest <repo>/tests -v
 
 ## Messages
 
-No exception message, CLI output or log line carries a path, a slide name or a value from
-the slide. The Python layer adds only fixed text and stage, layer, export and operation names.
+Messages may carry paths and argument values (decision 2026-11-23: the software runs in a
+secure environment). Argument validation still runs before native calls, so a bad argument gives
+an InvalidArgumentError naming the value (repr) instead of pybind11's overload noise.
