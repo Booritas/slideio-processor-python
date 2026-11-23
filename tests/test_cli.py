@@ -68,10 +68,46 @@ def test_cli_errors_name_no_path(tmp_path, pipeline_path, blob_slide, capsys):
                     assert os.path.basename(arg) not in text
 
 
-def test_usage_error_exits_2():
+def test_usage_error_exits_2(capsys):
     with pytest.raises(SystemExit) as info:
         main(["run"])
     assert info.value.code == 2
+    assert capsys.readouterr().err == "usage error: run 'slideio-processor run --help'\n"
+
+
+def test_usage_error_names_no_path(tmp_path, pipeline_path, blob_slide, capsys):
+    stray = tmp_path / "stray_secret_dir" / "patient_slide.svs"
+    with pytest.raises(SystemExit) as info:
+        main(_args(tmp_path, pipeline_path, blob_slide, "ws", "out", "--quiet", str(stray)))
+    assert info.value.code == 2
+    captured = capsys.readouterr()
+    for text in (captured.out, captured.err):
+        assert "stray_secret_dir" not in text and "patient_slide" not in text
+        assert str(tmp_path) not in text
+
+
+def test_scene_out_of_int32_names_no_path(tmp_path, pipeline_path, blob_slide, capsys):
+    argv = _args(tmp_path, pipeline_path, blob_slide, "ws", "out", "--scene", "99999999999", "--quiet")
+    assert main(argv) == 1
+    captured = capsys.readouterr()
+    assert captured.err.startswith("error: ")
+    for text in (captured.out, captured.err):
+        assert "99999999999" not in text
+        assert str(tmp_path) not in text
+        assert "slide.png" not in text and "three_stage.json" not in text
+
+
+def test_unexpected_error_prints_class_name_only(tmp_path, pipeline_path, blob_slide, capsys, monkeypatch):
+    from slideio_processor import cli
+
+    def boom(args):
+        raise RuntimeError(f"failed on {args.slide}")
+
+    monkeypatch.setattr(cli, "_run", boom)
+    assert main(_args(tmp_path, pipeline_path, blob_slide, "ws", "out", "--quiet")) == 1
+    captured = capsys.readouterr()
+    assert captured.err == "error: RuntimeError\n"
+    assert captured.out == ""
 
 
 def test_module_entry_point():
