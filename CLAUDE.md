@@ -23,6 +23,20 @@ cd <an empty directory outside the checkout>; python -m pytest <repo>/tests -v
   `import slideio_processor` never resolves to the source tree. Avoid `%TEMP%` itself if it
   holds stray `.py` files that shadow the standard library.
 
+## Pins and CI
+
+- `python scripts/check_pins.py` checks that the `slideio==X.Y.Z` pin in `pyproject.toml`
+  equals `SLIDEIO_VERSION` of the nested SlideIO (`extern/slideio-processor/extern/slideio`);
+  `--online` also checks that tag `vX.Y.Z` of `Booritas/slideio` is the nested submodule commit.
+- `.github/workflows/build.yml` builds the wheel with `SLIDEIO_PROCESSOR_PYTHON_TEST_HELPERS=1`
+  on Windows (`windows-2022`), manylinux_2_28 x86_64 and macOS arm64 (`macos-14`), runs the
+  tests from `$RUNNER_TEMP` and then `check_pins.py --online`. The Conan cache and
+  `build/slideio-install` are cached, keyed on the submodule commits.
+- `slideio` comes from `Booritas/slideio-dist` until the pinned version is on PyPI; then
+  switch the workflow to `pip install slideio==<pin>`.
+- A wheel rebuilt under the same version (the `slideio` wheel, or this package's) needs
+  `--force-reinstall --no-cache-dir`, or pip keeps the copy it already has.
+
 ## D2: one SlideIO per process
 
 - The wheel ships **no SlideIO library** and no MSVC runtime: `_libs/` holds exactly the
