@@ -35,7 +35,9 @@ void raiseInternal() {
 } // namespace
 
 void bindErrors(py::module_& m) {
-    py::register_exception_translator([](std::exception_ptr p) {
+    // Local: it applies only to functions bound in this module. A global translator would
+    // live in the pybind11 internals the slideio module shares and take over its errors.
+    py::register_local_exception_translator([](std::exception_ptr p) {
         try {
             if (p) std::rethrow_exception(p);
         } catch (const py::error_already_set&) {

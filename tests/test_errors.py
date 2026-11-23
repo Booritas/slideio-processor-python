@@ -67,6 +67,16 @@ def test_missing_file_raises_io_error_without_path(tmp_path):
     assert "missing.json" not in str(info.value)
 
 
+def test_slideio_exceptions_are_not_translated(tmp_path):
+    # The translator is local to this module: after import slideio_processor, SlideIO's
+    # own errors still reach the caller as RuntimeError.
+    import slideio
+
+    with pytest.raises(RuntimeError) as info:
+        slideio.open_slide(str(tmp_path / "missing.svs"), "SVS")
+    assert not isinstance(info.value, ProcessorError)
+
+
 def test_unknown_native_exception_is_internal_without_text():
     native = slideio_processor._native
     if not hasattr(native, "_raise_std_exception_for_testing"):
