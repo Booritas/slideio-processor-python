@@ -3,6 +3,7 @@ import enum
 import os
 
 from ._loader import load_native
+from .errors import InvalidArgumentError
 
 _native = load_native()
 
@@ -20,11 +21,26 @@ class ExportKind(enum.Enum):
 _KINDS = (ExportKind.CSV, ExportKind.GEOJSON, ExportKind.LABEL_MASK, ExportKind.RASTER_TIFF)
 
 
+# Every str reaches the native module through _text or _path_string. A str pybind11
+# cannot convert would raise a TypeError that repeats every argument, and a NUL would
+# truncate the C string; both are refused here with fixed text that echoes no value.
+def _text(value, what="a name"):
+    if not isinstance(value, str):
+        raise TypeError(f"{what} must be a str")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise InvalidArgumentError(f"{what} is not valid Unicode text") from None
+    if "\0" in value:
+        raise InvalidArgumentError(f"{what} contains a NUL character")
+    return value
+
+
 def _path_string(path):
     path = os.fspath(path)
     if not isinstance(path, str):
         raise TypeError("the path must be a str or an os.PathLike giving a str")
-    return path
+    return _text(path, "a path")
 
 
 class ExportSpec:
@@ -39,25 +55,25 @@ class ExportSpec:
     @staticmethod
     def csv(file, layer, measurements=()):
         """A CSV export of a layer's objects; no measurements means every measurement."""
-        spec = _native._ExportSpec.csv(file, layer)
+        spec = _native._ExportSpec.csv(_text(file), _text(layer))
         for name in measurements:
-            spec.measurement(name)
+            spec.measurement(_text(name))
         return ExportSpec(spec)
 
     @staticmethod
     def geojson(file, layer):
         """A GeoJSON export of a layer's objects."""
-        return ExportSpec(_native._ExportSpec.geo_json(file, layer))
+        return ExportSpec(_native._ExportSpec.geo_json(_text(file), _text(layer)))
 
     @staticmethod
     def label_mask(file, layer):
         """A label-mask export of a layer's objects, an OME-TIFF."""
-        return ExportSpec(_native._ExportSpec.label_mask(file, layer))
+        return ExportSpec(_native._ExportSpec.label_mask(_text(file), _text(layer)))
 
     @staticmethod
     def raster_tiff(file, raster):
         """A TIFF export of a raster."""
-        return ExportSpec(_native._ExportSpec.raster_tiff(file, raster))
+        return ExportSpec(_native._ExportSpec.raster_tiff(_text(file), _text(raster)))
 
     @property
     def kind(self):
@@ -111,7 +127,7 @@ class PipelineFile:
     @classmethod
     def from_json(cls, text):
         """Reads a file from its JSON text."""
-        return cls._wrap(_native._PipelineFile.from_json(text))
+        return cls._wrap(_native._PipelineFile.from_json(_text(text, "the JSON text")))
 
     @classmethod
     def load(cls, path):
@@ -124,7 +140,7 @@ class PipelineFile:
 
     def require(self, module):
         """Adds a required Python module; a name already listed is ignored. Returns self."""
-        self._file.require(module)
+        self._file.require(_text(module))
         return self
 
     def add_export(self, spec):

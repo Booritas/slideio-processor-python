@@ -39,3 +39,31 @@ def test_export_name_unsafe_message_has_no_value():
     with pytest.raises(InvalidArgumentError) as info:
         ExportSpec.csv("CON", "x")
     assert "CON" not in str(info.value)
+
+
+def test_load_undecodable_path_message_has_no_path(tmp_path):
+    path = str(tmp_path / "secret_dir" / "pat\udce9ient.json")
+    with pytest.raises(InvalidArgumentError) as info:
+        PipelineFile.load(path)
+    message = str(info.value)
+    assert "secret_dir" not in message and "ient.json" not in message and str(tmp_path) not in message
+
+
+@pytest.mark.parametrize("call", [
+    lambda: ExportSpec.csv("a\0b.csv", "x"),
+    lambda: ExportSpec.csv("a.csv", "x\0y"),
+    lambda: ExportSpec.csv("a.csv", "x", ["area\0"]),
+    lambda: ExportSpec.geojson("a.geojson", "x\udce9"),
+    lambda: ExportSpec.label_mask("a.ome.tif", "x\0"),
+    lambda: ExportSpec.raster_tiff("a\0.tif", "prob"),
+    lambda: PipelineFile.from_json("{}\0"),
+    lambda: PipelineFile.from_json("\udce9"),
+    lambda: PipelineFile().require("numpy\0"),
+    lambda: PipelineFile.load("p\0.json"),
+])
+def test_nul_or_undecodable_text_is_refused_without_value(call):
+    with pytest.raises(InvalidArgumentError) as info:
+        call()
+    message = str(info.value)
+    assert "\0" not in message and "\udce9" not in message
+    assert "a.csv" not in message and "numpy" not in message and "area" not in message

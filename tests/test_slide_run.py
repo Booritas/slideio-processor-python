@@ -223,3 +223,62 @@ def test_processor_libraries_load_from_package(blob_slide, three_stage_json, tmp
     assert slideio_libs
     for p in slideio_libs:
         assert os.path.samefile(os.path.dirname(p), theirs), os.path.basename(p)
+
+
+@pytest.mark.parametrize("scene", [2**31, 99999999999, True, 1.0, "0"])
+def test_scene_not_an_int32_refused_without_value(blob_slide, three_stage_json, tmp_path, scene):
+    with pytest.raises(InvalidArgumentError) as info:
+        _run(blob_slide, tmp_path, three_stage_json, scene=scene)
+    message = str(info.value)
+    assert "2147483648" not in message and "99999999999" not in message
+    assert "slide.png" not in message and str(tmp_path) not in message
+
+
+def test_bad_path_or_slide_id_refused_without_value(blob_slide, three_stage_json, tmp_path):
+    f = PipelineFile.from_json(three_stage_json)
+    calls = [
+        lambda: SlideRun(f, str(tmp_path / "pat\udce9ient.svs"), tmp_path / "ws", tmp_path / "out"),
+        lambda: SlideRun(f, str(blob_slide) + "\0x", tmp_path / "ws", tmp_path / "out"),
+        lambda: SlideRun(f, blob_slide, str(tmp_path / "w\0s"), tmp_path / "out"),
+        lambda: SlideRun(f, blob_slide, tmp_path / "ws", str(tmp_path / "o\udce9ut")),
+        lambda: SlideRun(f, blob_slide, tmp_path / "ws", tmp_path / "out", slide_id="S\0-001"),
+    ]
+    for call in calls:
+        with pytest.raises(InvalidArgumentError) as info:
+            call()
+        message = str(info.value)
+        assert str(tmp_path) not in message and "slide.png" not in message and "-001" not in message
+    assert not (tmp_path / "ws").exists()
+
+
+def test_overlapping_run_of_one_object_refused(blob_slide, three_stage_json, tmp_path):
+    run = _run(blob_slide, tmp_path, three_stage_json)
+    started = threading.Event()
+    release = threading.Event()
+    results = []
+    errors = []
+
+    def progress(*args):
+        started.set()
+        release.wait(60)
+
+    def first():
+        try:
+            results.append(run.run(progress=progress))
+        except BaseException as error:  # noqa: B036
+            errors.append(error)
+
+    t = threading.Thread(target=first)
+    t.start()
+    try:
+        assert started.wait(60)
+        with pytest.raises(InvalidArgumentError) as info:
+            run.run()
+        assert str(info.value) == "SlideRun: a run of this object is already in progress"
+    finally:
+        release.set()
+        t.join()
+    assert not errors
+    assert len(results) == 1 and all(s.ran for s in results[0].stages)
+    # Once the first run has finished, the object runs again.
+    assert not any(s.ran for s in run.run().stages)

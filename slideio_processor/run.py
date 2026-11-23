@@ -4,7 +4,10 @@ import threading
 from typing import Callable, Optional, Tuple
 
 from ._loader import load_native
-from .pipeline_file import _path_string
+from .errors import InvalidArgumentError
+from .pipeline_file import _path_string, _text
+
+_INT32_MAX = 2**31 - 1
 
 _native = load_native()
 
@@ -66,22 +69,42 @@ class SlideRun:
     carry; the default "" means they carry none.
     """
 
-    __slots__ = ("_run",)
+    __slots__ = ("_run", "_lock")
 
     def __init__(self, pipeline, slide, workspace, out, *, scene=0, slide_id=""):
+        # Negative scenes are refused by the library, with its own message.
+        if isinstance(scene, bool) or not isinstance(scene, int):
+            raise InvalidArgumentError("SlideRun: the scene must be an int")
+        if scene > _INT32_MAX:
+            raise InvalidArgumentError("SlideRun: the scene is out of range")
         self._run = _native._SlideRun(pipeline._file, _path_string(slide), scene, _path_string(workspace),
-                                      _path_string(out), slide_id)
+                                      _path_string(out), _text(slide_id, "the slide id"))
+        self._lock = threading.Lock()
 
     def run(self, *, progress: Optional[Callable[[str, float, int, int], None]] = None,
             cancellation: Optional[Cancellation] = None) -> SlideRunResult:
         """Runs the file: validates, opens or creates the workspace, runs what is not
         current and writes the exports.
 
-        progress(name, fraction, completed, total) is called from worker threads. When it
-        raises, the run is cancelled and its exception is raised, with the CancelledError
-        as its __context__. Ctrl-C cancels the run and raises KeyboardInterrupt once the
-        run has stopped. A cancelled run raises CancelledError and leaves no partial file.
+        progress(name, fraction, completed, total) is called from worker threads. name is
+        a stage name or the name of a library step: "export", "raster export" or
+        "seam merge". When progress raises, the run is cancelled and its exception is
+        raised, with the CancelledError as its __context__. Ctrl-C cancels the run and
+        raises KeyboardInterrupt once the run has stopped. A cancelled run raises
+        CancelledError and leaves no partial file.
+
+        One object runs once at a time: run() while another run() of the same object is
+        in progress raises InvalidArgumentError.
         """
+        if not self._lock.acquire(blocking=False):
+            raise InvalidArgumentError("SlideRun: a run of this object is already in progress")
+        try:
+            return self._run_locked(progress, cancellation)
+        finally:
+            # _run_locked returns or raises only once the native run has finished.
+            self._lock.release()
+
+    def _run_locked(self, progress, cancellation):
         if cancellation is None:
             cancellation = Cancellation()
         outcome = {}
