@@ -1,0 +1,8 @@
+build/
+dist/
+*.egg-info/
+__pycache__/
+slideio_processor/_libs/*
+!slideio_processor/_libs/__init__.py
+slideio_processor/_build_info.py
+.superpowers/

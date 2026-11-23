@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61", "wheel", "pybind11==3.1.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "slideio-processor"
+dynamic = ["version"]
+description = "Python bindings for slideio-processor"
+license = {text = "BSD-3-Clause"}
+classifiers = ["License :: OSI Approved :: BSD License"]
+requires-python = ">=3.9"
+dependencies = [
+    "slideio==2.11.1",
+    "numpy",
+]
+
+[project.optional-dependencies]
+pandas = ["pandas"]
+
+[project.scripts]
+slideio-processor = "slideio_processor.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["slideio_processor*"]
+
+[tool.setuptools.package-data]
+slideio_processor = ["_libs/*"]
