@@ -225,12 +225,12 @@ def test_processor_libraries_load_from_package(blob_slide, three_stage_json, tmp
         assert os.path.samefile(os.path.dirname(p), theirs), os.path.basename(p)
 
 
-@pytest.mark.parametrize("scene", [2**31, 99999999999, True, 1.0, "0"])
+@pytest.mark.parametrize("scene", [2**31, 99999999999, -2**31 - 1, -99999999999, True, 1.0, "0"])
 def test_scene_not_an_int32_refused_without_value(blob_slide, three_stage_json, tmp_path, scene):
     with pytest.raises(InvalidArgumentError) as info:
         _run(blob_slide, tmp_path, three_stage_json, scene=scene)
     message = str(info.value)
-    assert "2147483648" not in message and "99999999999" not in message
+    assert "214748364" not in message and "99999999999" not in message
     assert "slide.png" not in message and str(tmp_path) not in message
 
 

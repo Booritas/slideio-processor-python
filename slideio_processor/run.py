@@ -7,6 +7,7 @@ from ._loader import load_native
 from .errors import InvalidArgumentError
 from .pipeline_file import _path_string, _text
 
+_INT32_MIN = -(2**31)
 _INT32_MAX = 2**31 - 1
 
 _native = load_native()
@@ -72,10 +73,12 @@ class SlideRun:
     __slots__ = ("_run", "_lock")
 
     def __init__(self, pipeline, slide, workspace, out, *, scene=0, slide_id=""):
-        # Negative scenes are refused by the library, with its own message.
+        # Outside int32, pybind11's conversion would fail with a TypeError that
+        # repeats every argument, paths included; refuse here with fixed text.
+        # Negative scenes inside int32 are refused by the library, with its own message.
         if isinstance(scene, bool) or not isinstance(scene, int):
             raise InvalidArgumentError("SlideRun: the scene must be an int")
-        if scene > _INT32_MAX:
+        if not _INT32_MIN <= scene <= _INT32_MAX:
             raise InvalidArgumentError("SlideRun: the scene is out of range")
         self._run = _native._SlideRun(pipeline._file, _path_string(slide), scene, _path_string(workspace),
                                       _path_string(out), _text(slide_id, "the slide id"))
