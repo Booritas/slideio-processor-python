@@ -18,6 +18,7 @@ from .errors import (  # noqa: E402  (after the native module is loaded)
     UnsupportedDataTypeError,
 )
 from .pipeline_file import ExportKind, ExportSpec, PipelineFile  # noqa: E402
+from .run import Cancellation, ExportResult, SlideRun, SlideRunResult, StageResult  # noqa: E402
 
 __version__ = _build_info.VERSION
 SLIDEIO_VERSION = _build_info.SLIDEIO_VERSION
@@ -34,4 +35,5 @@ __all__ = [
     "ChannelArityError", "StoreFormatError", "StageError", "TileError", "CancelledError",
     "IoError", "InternalError",
     "ExportKind", "ExportSpec", "PipelineFile",
+    "Cancellation", "ExportResult", "SlideRun", "SlideRunResult", "StageResult",
 ]

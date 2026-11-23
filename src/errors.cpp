@@ -34,6 +34,21 @@ void raiseInternal() {
 
 } // namespace
 
+void setNativeError(std::exception_ptr p) {
+    try {
+        std::rethrow_exception(p);
+    } catch (const sp::ProcessorError& e) {
+        raise(static_cast<int32_t>(e.code()), e.what(), e.stageName(), e.operationName(), e.cause(), e.hasTile(),
+              e.tileX(), e.tileY());
+    } catch (const std::bad_alloc&) {
+        PyErr_NoMemory();
+    } catch (const std::exception&) {
+        raiseInternal();
+    } catch (...) {
+        raiseInternal();
+    }
+}
+
 void bindErrors(py::module_& m) {
     // Local: it applies only to functions bound in this module. A global translator would
     // live in the pybind11 internals the slideio module shares and take over its errors.
@@ -44,15 +59,8 @@ void bindErrors(py::module_& m) {
             throw; // A Python exception passing through C++: pybind11 restores it.
         } catch (const py::builtin_exception&) {
             throw; // pybind11's own errors (cast_error, value_error, ...): pybind11 maps them.
-        } catch (const sp::ProcessorError& e) {
-            raise(static_cast<int32_t>(e.code()), e.what(), e.stageName(), e.operationName(), e.cause(),
-                  e.hasTile(), e.tileX(), e.tileY());
-        } catch (const std::bad_alloc&) {
-            PyErr_NoMemory();
-        } catch (const std::exception&) {
-            raiseInternal();
         } catch (...) {
-            raiseInternal();
+            setNativeError(std::current_exception());
         }
     });
 
