@@ -29,9 +29,13 @@ cd <an empty directory outside the checkout>; python -m pytest <repo>/tests -v
   equals `SLIDEIO_VERSION` of the nested SlideIO (`extern/slideio-processor/extern/slideio`);
   `--online` also checks that tag `vX.Y.Z` of `Booritas/slideio` is the nested submodule commit.
 - `.github/workflows/build.yml` builds the wheel with `SLIDEIO_PROCESSOR_PYTHON_TEST_HELPERS=1`
-  on Windows (`windows-2022`), manylinux_2_28 x86_64 and macOS arm64 (`macos-14`), runs the
-  tests from `$RUNNER_TEMP` and then `check_pins.py --online`. The Conan cache and
-  `build/slideio-install` are cached, keyed on the submodule commits.
+  on Windows (`windows-2022`), manylinux_2_28 x86_64 and macOS arm64 (`macos-15`, as the
+  processor's own CI), runs the tests from outside the checkout and then
+  `check_pins.py --online`. On Windows and macOS the Conan cache and `build/slideio-install`
+  are cached, keyed on the submodule commits. The manylinux job runs everything in one
+  `docker run` of `booritas/slideio-manylinux_2_28_x86_64:2.10.0`, as the processor's CI
+  does: the bare pypa image lacks the -devel packages SlideIO's Conan graph needs. That image
+  puts cp311 first on PATH, so the job puts cp312 first (the `slideio` wheel is cp312).
 - `slideio` comes from `Booritas/slideio-dist` until the pinned version is on PyPI; then
   switch the workflow to `pip install slideio==<pin>`.
 - A wheel rebuilt under the same version (the `slideio` wheel, or this package's) needs
