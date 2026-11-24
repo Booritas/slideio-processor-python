@@ -12,6 +12,8 @@ void bindErrors(py::module_& m);
 void bindPipelineFile(py::module_& m);
 /// Binds SlideRun and CancellationSource as _SlideRun and _CancellationSource.
 void bindRun(py::module_& m);
+/// Binds the registration of Python operations and the catalog queries.
+void bindOperations(py::module_& m);
 
 /// Sets the current Python error for a native exception that is not a pybind11 one, as the
 /// module's exception translator does: a ProcessorError by its code, anything else as an
