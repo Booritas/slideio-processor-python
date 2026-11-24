@@ -19,4 +19,9 @@ PYBIND11_MODULE(slideio_processor_native, m) {
     bindPipelineFile(m);
     bindRun(m);
     bindOperations(m);
+    bindConfiguration(m);
+    bindWorkspace(m);
+    bindStages(m);
+    bindObjects(m);
+    bindExports(m);
 }

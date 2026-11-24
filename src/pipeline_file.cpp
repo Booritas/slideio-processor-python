@@ -2,6 +2,7 @@
 
 #include <slideio/processor/run/export_spec.hpp>
 #include <slideio/processor/run/pipeline_file.hpp>
+#include <slideio/processor/workspace/workspace.hpp>
 
 #include <cstdint>
 #include <string>
@@ -46,6 +47,10 @@ void bindPipelineFile(py::module_& m) {
         .def(py::init<>())
         .def_static("from_json", &sp::PipelineFile::fromJson)
         .def_static("load", &sp::PipelineFile::load)
+        // Reads the workspace's registries: the GIL is released (the GIL rule).
+        .def_static(
+            "from_workspace", [](sp::Workspace& workspace) { return sp::PipelineFile::fromWorkspace(workspace); },
+            py::arg("workspace"), py::call_guard<py::gil_scoped_release>())
         .def("to_json", &toJson)
         .def("require", [](sp::PipelineFile& self, const char* module) { self.require(module); })
         .def("add_export", [](sp::PipelineFile& self, const sp::ExportSpec& spec) { self.addExport(spec); })
