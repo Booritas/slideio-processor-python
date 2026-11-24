@@ -135,7 +135,7 @@ class Workspace:
     threads.
     """
 
-    __slots__ = ("_native", "_closed", "_path", "_slide_path", "_scene_index", "_read_only", "_long_call")
+    __slots__ = ("_native", "_closed", "_path", "_slide_path", "_scene_index", "_read_only", "_state", "_running")
 
     def __init__(self, native):
         """Not for direct use: call create(), open() or open_read_only()."""
@@ -145,7 +145,10 @@ class Workspace:
         self._slide_path = native.slide_path()
         self._scene_index = native.scene_index()
         self._read_only = native.is_read_only()
-        self._long_call = threading.Lock()
+        # _state guards _closed and _running, so that close() and the start of a long call
+        # decide atomically: neither starts once the other has.
+        self._state = threading.Lock()
+        self._running = False
 
     @classmethod
     def create(cls, path, slide, *, scene=None, configuration=None) -> "Workspace":
@@ -218,15 +221,13 @@ class Workspace:
         call does nothing. When closing the store fails, IoError is raised and the
         workspace is closed even so. While a stage run of this object is in progress,
         InvalidArgumentError is raised and nothing is closed."""
-        if self._closed:
-            return
-        if not self._long_call.acquire(blocking=False):
-            raise InvalidArgumentError("Workspace: cannot close while a stage run of this object is in progress")
-        try:
+        with self._state:
+            if self._closed:
+                return  # closed, or being closed by another thread
+            if self._running:
+                raise InvalidArgumentError("Workspace: cannot close while a stage run of this object is in progress")
             self._closed = True
-            self._native.close()
-        finally:
-            self._long_call.release()
+        self._native.close()
 
     def __enter__(self) -> "Workspace":
         return self
@@ -237,6 +238,20 @@ class Workspace:
     def __repr__(self):
         state = "closed" if self._closed else ("read-only" if self._read_only else "writable")
         return f"Workspace({self._path!r}, slide={self._slide_path!r}, scene={self._scene_index}, {state})"
+
+    def _begin_long_call(self):
+        """Starts this object's one long call (decision 8): IoError once the workspace is
+        closed (or being closed), InvalidArgumentError while another long call runs."""
+        with self._state:
+            if self._closed:
+                raise IoError("Workspace: the workspace is closed")
+            if self._running:
+                raise InvalidArgumentError("Workspace: a stage run of this object is already in progress")
+            self._running = True
+
+    def _end_long_call(self):
+        with self._state:
+            self._running = False
 
     def _handle(self):
         """The native workspace; raises IoError once the workspace is closed."""
@@ -358,13 +373,14 @@ class Workspace:
             cancellation = Cancellation()
         elif not isinstance(cancellation, Cancellation):
             raise TypeError(f"Workspace: cancellation must be a Cancellation or None, got {cancellation!r}")
-        if not self._long_call.acquire(blocking=False):
-            raise InvalidArgumentError("Workspace: a stage run of this object is already in progress")
+        # Checks closed again, atomically with close(): the check in _handle() above only
+        # orders the errors, and a close() may have run since.
+        self._begin_long_call()
         try:
-            # close() is refused while the lock is held, so handle stays open throughout.
+            # close() is refused until _end_long_call(), so handle stays open throughout.
             with operation_causes():
                 row = run_interruptibly(
                     lambda: _native._run_stage(handle, name, progress, cancellation._source), cancellation)
             return StageRunResult(*row)
         finally:
-            self._long_call.release()
+            self._end_long_call()
