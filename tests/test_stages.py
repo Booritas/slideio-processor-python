@@ -100,6 +100,15 @@ def test_definition_is_frozen():
         definition.reads_rasters["q"] = "x"
 
 
+def test_definition_copies_its_spec():
+    spec = nuclei_spec()
+    definition = StageDefinition("s", spec)
+    assert definition.pipeline is not spec
+    assert definition.pipeline == spec
+    spec.add("segment.connected_components")
+    assert len(definition.pipeline.operations) == 3
+
+
 def _declare_nuclei(ws):
     ws.declare_layer("nuclei")
     return ws.declare_stage(StageDefinition("nuclei", nuclei_spec(), writes_layers=("nuclei",)))
@@ -195,9 +204,9 @@ def test_raster_stage(blob_slide, tmp_path):
 
 def test_unknown_stage_refused(blob_slide, tmp_path):
     with Workspace.create(tmp_path / "ws", blob_slide) as ws:
-        with pytest.raises(InvalidArgumentError):
+        with pytest.raises(InvalidArgumentError, match="'x'"):
             ws.stage("x")
-        with pytest.raises(InvalidArgumentError):
+        with pytest.raises(InvalidArgumentError, match="'x'"):
             ws.mark_stale("x")
 
 

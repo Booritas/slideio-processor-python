@@ -246,6 +246,8 @@ class StageDefinition:
             raise InvalidArgumentError("StageDefinition: the stage name is empty")
         if not isinstance(self.pipeline, PipelineSpec):
             raise TypeError(f"StageDefinition: pipeline must be a PipelineSpec, got {self.pipeline!r}")
+        # A copy: a later add() to the caller's spec must not change a frozen definition.
+        put(self, "pipeline", PipelineSpec.from_json(self.pipeline.to_json()))
         for field in ("reads_layers", "writes_layers", "annotates_layers", "depends_on"):
             put(self, field, _names(getattr(self, field), field))
         for field in ("writes_raster", "restrict_to_layer"):
