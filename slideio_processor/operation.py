@@ -203,9 +203,11 @@ class Operation:
     def apply(self, tile, context):
         """Returns the result for one tile. `tile` is a C-contiguous copy of the input,
         shaped (height, width, planes), over the halo rect; `context` is a TileContext,
-        valid only during the call. A RASTER operation returns an array of output_dtype
-        shaped (height, width, output_planes), or (height, width) for one plane.
-        Subclasses must override it."""
+        valid only during the call. A LABELS operation returns an int32 label image shaped
+        (height, width) or (height, width, 1), 0 for background; the library turns it into
+        objects on the stage's layer. A RASTER operation returns an array of output_dtype
+        shaped (height, width, output_planes), or (height, width) for one plane. Nothing is
+        cast: another dtype or shape fails the run. Subclasses must override it."""
         raise NotImplementedError
 
     @classmethod

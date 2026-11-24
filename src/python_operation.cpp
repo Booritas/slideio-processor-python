@@ -11,6 +11,7 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 
+#include <slideio/processor/algorithm/segment/label_image.hpp>
 #include <slideio/processor/core/block_view.hpp>
 #include <slideio/processor/core/data_type.hpp>
 #include <slideio/processor/core/error.hpp>
@@ -315,6 +316,36 @@ private:
     PythonInstance python_;
 };
 
+// The operation a run gets for a LABELS class: apply's array is the label image over the
+// halo rect, and the base turns it into objects, owned, measured and counted as truncated
+// as for any LabelImageOperation.
+class LabelsStandIn final : public sp::LabelImageOperation {
+public:
+    LabelsStandIn(std::string name, SnapshotPtr snapshot, std::shared_ptr<ConcurrencyGate> gate,
+                  const sp::OperationParameters& parameters)
+        : python_(std::move(name), std::move(snapshot), std::move(gate), parameters) {}
+
+    const char* name() const override { return python_.name().c_str(); }
+    // The tile handed to apply is one array of the planes' common type (decision 5).
+    bool requiresUniformTypes() const override { return true; }
+    sp::Halo halo() const override { return sp::Halo::uniform(python_.snapshot().halo); }
+    const sp::OperationParameters& parameters() const override { return python_.parameters(); }
+    int64_t workingSetBytesPerLevelPixel() const override {
+        return sp::LabelImageOperation::workingSetBytesPerLevelPixel() + python_.snapshot().workingSetBytesPerPixel;
+    }
+
+    // Decision 6: an int32 array shaped (H, W) or (H, W, 1) over the halo rect, as `labels`.
+    void predictLabels(const sp::OperationContext& context, sp::BlockView& labels) override {
+        const sp::BlockView& in = context.input();
+        python_.apply(context, [&](const py::object& returned) {
+            return copyResult(python_.name(), returned, sp::DataType::Int32, 1, in.height(), in.width(), 0, 0,
+                              labels);
+        });
+    }
+
+private:
+    PythonInstance python_;
+};
 
 // The catalog's factory for one registered name. A redefinition swaps its snapshot.
 class PythonOperationFactory final : public sp::OperationFactory {
@@ -336,11 +367,7 @@ public:
     sp::OperationPtr create(const sp::OperationParameters& parameters) const override {
         SnapshotPtr s = snapshot();
         check(parameters, *s);
-        if (s->labels) {
-            // Task 4 adds the LABELS stand-in.
-            throw sp::InvalidArgumentError(("operation '" + name_ + "': LABELS operations cannot run yet").c_str());
-        }
-        return std::make_shared<RasterStandIn>(name_, std::move(s), gate_, parameters);
+        return standIn(std::move(s), parameters);
     }
 
     const char* name() const override { return name_.c_str(); }
@@ -352,13 +379,25 @@ public:
     sp::Halo halo() const override { return sp::Halo::uniform(snapshot()->halo); }
     const char* correctnessReference() const override { return "a Python class; see its origin"; }
     const char* complexityNote() const override { return ""; }
-    int64_t workingSetBytesPerLevelPixel() const override { return snapshot()->workingSetBytesPerPixel; }
+    // The working set is the stand-in's own figure (a LABELS one adds the base's), from a
+    // stand-in that never runs: building one touches no Python.
+    int64_t workingSetBytesPerLevelPixel() const override {
+        return standIn(snapshot(), sp::OperationParameters())->workingSetBytesPerLevelPixel();
+    }
+    int64_t workingSetBytesPerTile() const override {
+        return standIn(snapshot(), sp::OperationParameters())->workingSetBytesPerTile();
+    }
     bool producesObjects() const override { return snapshot()->labels; }
     bool isDeterministic() const override { return snapshot()->deterministic; }
     const char* origin() const override { return snapshot()->origin.c_str(); }
     int32_t outputPlaneCount(int32_t) const override { return snapshot()->outputPlanes; }
 
 private:
+    sp::OperationPtr standIn(SnapshotPtr s, const sp::OperationParameters& parameters) const {
+        if (s->labels) return std::make_shared<LabelsStandIn>(name_, std::move(s), gate_, parameters);
+        return std::make_shared<RasterStandIn>(name_, std::move(s), gate_, parameters);
+    }
+
     [[noreturn]] void refuse(const std::string& text) const {
         sp::ErrorContext context;
         context.operationName = name_.c_str();
