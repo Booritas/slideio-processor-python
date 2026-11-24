@@ -1,14 +1,28 @@
 #include "progress.hpp"
+#include "python_runtime.hpp"
 
 #include <utility>
 
 namespace sp = slideio::processor;
+
+namespace {
+
+// Ends a successful enterPython() however the scope is left.
+struct LeaveOnExit {
+    ~LeaveOnExit() { slideio_processor_python::leavePython(); }
+};
+
+} // namespace
 
 PythonProgress::PythonProgress(py::object callback, sp::CancellationSource& source)
     : callback_(std::move(callback)), source_(source) {}
 
 void PythonProgress::onProgress(const char* stageName, double fraction, int64_t completed, int64_t total) noexcept {
     if (failed_.load(std::memory_order_acquire)) return;
+    // The exit gate (decision 9), as the Python log sink: once the interpreter is exiting,
+    // the call is dropped instead of taking the GIL.
+    if (!slideio_processor_python::enterPython()) return;
+    LeaveOnExit leave;
     try {
         py::gil_scoped_acquire gil;
         if (failed_.load(std::memory_order_acquire)) return; // another worker failed meanwhile

@@ -217,11 +217,11 @@ struct Batch {
     // GIL held.
     py::tuple toPython() const {
         const auto n = static_cast<py::ssize_t>(count);
-        auto namesOf = [n](const auto& ids, const std::map<int32_t, std::string>& table) {
+        auto namesOf = [n](const auto& column, const std::map<int32_t, std::string>& table) {
             std::map<int32_t, py::str> cache;
             for (const auto& [value, name] : table) cache.emplace(value, py::str(name));
             py::list out(n);
-            for (py::ssize_t i = 0; i < n; ++i) out[i] = cache.at(ids[static_cast<size_t>(i)].value());
+            for (py::ssize_t i = 0; i < n; ++i) out[i] = cache.at(column[static_cast<size_t>(i)].value());
             return out;
         };
         py::list idList(n);
@@ -260,9 +260,9 @@ struct Batch {
                 const auto& rings = geometry[static_cast<size_t>(i)];
                 py::list out;
                 for (const Ring& ring : rings) {
-                    const auto count = static_cast<py::ssize_t>(ring.first.size());
-                    py::array_t<int64_t> points({count, static_cast<py::ssize_t>(2)});
-                    for (py::ssize_t p = 0; p < count; ++p) {
+                    const auto pointCount = static_cast<py::ssize_t>(ring.first.size());
+                    py::array_t<int64_t> points({pointCount, static_cast<py::ssize_t>(2)});
+                    for (py::ssize_t p = 0; p < pointCount; ++p) {
                         points.mutable_at(p, 0) = ring.first[static_cast<size_t>(p)].x;
                         points.mutable_at(p, 1) = ring.first[static_cast<size_t>(p)].y;
                     }

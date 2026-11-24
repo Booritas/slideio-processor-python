@@ -145,7 +145,7 @@ def test_layers_round_trip(blob_slide, tmp_path):
         assert ws.layers[2] == Layer("fragments", LayerKind.PRIMITIVE, None, True, 0)
         with pytest.raises(InvalidArgumentError, match="tissue"):
             ws.drop_layer("tissue")
-        with pytest.raises(InvalidArgumentError, match="nowhere"):
+        with pytest.raises(InvalidArgumentError, match="no layer named 'nowhere'"):
             ws.drop_layer("nowhere")
 
 

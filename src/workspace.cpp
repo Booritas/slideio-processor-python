@@ -53,7 +53,7 @@ ScenePointer sceneOf(const py::object& capsule) {
 
 sp::LayerId findLayer(sp::LayerRegistry& layers, const std::string& name) {
     sp::LayerId id;
-    if (!layers.find(name.c_str(), id)) refuse("no layer is named '" + name + "'");
+    if (!layers.find(name.c_str(), id)) refuse("no layer named '" + name + "'");
     return id;
 }
 
