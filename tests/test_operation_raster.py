@@ -1,5 +1,6 @@
 import _thread
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -175,8 +176,38 @@ def test_max_concurrency_one(seam_slide, tmp_path):
     assert state["most"] == 1
 
 
+def test_max_concurrency_unlimited_runs_tiles_together(seam_slide, tmp_path):
+    # The positive control for test_max_concurrency_one: without a limit, two applies overlap.
+    if (os.cpu_count() or 1) < 2:
+        pytest.skip("needs two CPUs")
+    lock = threading.Lock()
+    overlap = threading.Event()
+    state = {"now": 0, "most": 0}
+
+    class Grey(Operation):
+        name = "test.max_concurrency_unlimited_runs_tiles_together"
+        version = "1"
+        output = Output.RASTER
+
+        def apply(self, tile, context):
+            with lock:
+                state["now"] += 1
+                state["most"] = max(state["most"], state["now"])
+                if state["now"] >= 2:
+                    overlap.set()
+            # The first apply waits, without the GIL, for a second one to arrive.
+            overlap.wait(timeout=30)
+            with lock:
+                state["now"] -= 1
+            return _mean(tile)
+
+    _slide_run(seam_slide, tmp_path, Grey.name).run()
+    assert state["most"] > 1
+
+
 def _no_records_left(name):
-    return operation_module._take_errors(name, 0) == []
+    # Read-only: a check that cleared the records would hide what a run left behind.
+    return operation_module._peek_errors() == []
 
 
 def test_apply_exception_chained(seam_slide, tmp_path):
@@ -197,6 +228,21 @@ def test_apply_exception_chained(seam_slide, tmp_path):
     assert isinstance(info.value.__cause__, ValueError)
     assert "boom" in str(info.value.__cause__)
     assert "ValueError: boom" in str(info.value)
+    assert _no_records_left(name)
+
+    class OtherBroken(Operation):
+        name = "test.apply_exception_chained"
+        version = "1"
+        output = Output.RASTER
+
+        def apply(self, tile, context):
+            raise KeyError("second")
+
+    # The first run's exception is not the cause of the second run's error.
+    with pytest.raises(StageError) as info:
+        run.run()
+    assert isinstance(info.value.__cause__, KeyError)
+    assert "second" in str(info.value.__cause__)
     assert _no_records_left(name)
 
     class Fixed(Operation):

@@ -105,19 +105,21 @@ class SlideRun:
         """
         if not self._lock.acquire(blocking=False):
             raise InvalidArgumentError("SlideRun: a run of this object is already in progress")
-        mark = _operation._error_mark()
         try:
-            return self._run_locked(progress, cancellation)
-        except ProcessorError as error:
-            # A Python operation's own exception becomes the cause (decision 7).
-            if error.operation_name is not None:
-                causes = _operation._take_errors(error.operation_name, mark)
-                if causes:
-                    error.__cause__ = causes[0]
-            raise
+            mark = _operation._error_mark()
+            try:
+                return self._run_locked(progress, cancellation)
+            except ProcessorError as error:
+                # A Python operation's own exception becomes the cause (decision 7).
+                if error.operation_name is not None:
+                    causes = _operation._take_errors(error.operation_name, mark)
+                    if causes:
+                        error.__cause__ = causes[0]
+                raise
+            finally:
+                # _run_locked returns or raises only once the native run has finished.
+                _operation._take_errors(None, mark)
         finally:
-            # _run_locked returns or raises only once the native run has finished.
-            _operation._take_errors(None, mark)
             self._lock.release()
 
     def _run_locked(self, progress, cancellation):

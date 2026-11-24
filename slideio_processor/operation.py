@@ -234,7 +234,8 @@ def registered_operations():
 
 
 # Exceptions __init__ or apply raised, as (sequence number, operation name, exception),
-# for SlideRun.run to chain as the cause of the TileError (decision 7).
+# for SlideRun.run to chain as the cause of the ProcessorError (a StageError) it raises
+# (decision 7).
 _errors_lock = threading.Lock()
 _errors = []
 _next_error = 0
@@ -251,6 +252,12 @@ def _error_mark():
     """The sequence number the next recorded error gets."""
     with _errors_lock:
         return _next_error
+
+
+def _peek_errors():
+    """Every recorded error, as (operation name, exception); changes nothing."""
+    with _errors_lock:
+        return [(n, error) for _, n, error in _errors]
 
 
 def _take_errors(name, since):
