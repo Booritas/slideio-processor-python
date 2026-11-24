@@ -31,6 +31,26 @@ def blob_slide(tmp_path):
 
 
 @pytest.fixture
+def seam_slide(tmp_path):
+    """A 2200x400 RGB slide: white, with three dark discs of radius 40 centred at (300, 200),
+    (1024, 200) and (1700, 200). It is a TIFF with 1024x1024 tiles, named seam.svs, so the
+    run has three tiles and the middle disc straddles the first seam; a PNG would be one tile
+    (see support/tiled_tiff.py). seam.png beside it holds the same pixels."""
+    import numpy
+    from PIL import Image, ImageDraw
+    from support.tiled_tiff import write_tiled_rgb
+
+    image = Image.new("RGB", (2200, 400), _BACKGROUND)
+    draw = ImageDraw.Draw(image)
+    for cx in (300, 1024, 1700):
+        draw.ellipse((cx - _RADIUS, 200 - _RADIUS, cx + _RADIUS, 200 + _RADIUS), fill=_BLOB)
+    image.save(tmp_path / "seam.png")
+    path = tmp_path / "seam.svs"
+    write_tiled_rgb(path, numpy.asarray(image), tile=1024)
+    return path
+
+
+@pytest.fixture
 def three_stage_json():
     """The C++ test's three-stage pipeline file: tissue, nuclei within tissue, and a prob raster."""
     with open(os.path.join(_tests_dir, "data", "three_stage.json"), encoding="utf-8") as f:

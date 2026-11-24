@@ -3,8 +3,9 @@ import dataclasses
 import threading
 from typing import Callable, Optional, Tuple
 
+from . import operation as _operation
 from ._loader import load_native
-from .errors import InvalidArgumentError
+from .errors import InvalidArgumentError, ProcessorError
 from .pipeline_file import _path_string, _text
 
 _INT32_MIN = -(2**31)
@@ -96,15 +97,27 @@ class SlideRun:
         raises KeyboardInterrupt once the run has stopped. A cancelled run raises
         CancelledError and leaves no partial file.
 
+        When a Python operation's __init__ or apply raises, the run raises a ProcessorError
+        naming the operation, with that exception as its __cause__.
+
         One object runs once at a time: run() while another run() of the same object is
         in progress raises InvalidArgumentError.
         """
         if not self._lock.acquire(blocking=False):
             raise InvalidArgumentError("SlideRun: a run of this object is already in progress")
+        mark = _operation._error_mark()
         try:
             return self._run_locked(progress, cancellation)
+        except ProcessorError as error:
+            # A Python operation's own exception becomes the cause (decision 7).
+            if error.operation_name is not None:
+                causes = _operation._take_errors(error.operation_name, mark)
+                if causes:
+                    error.__cause__ = causes[0]
+            raise
         finally:
             # _run_locked returns or raises only once the native run has finished.
+            _operation._take_errors(None, mark)
             self._lock.release()
 
     def _run_locked(self, progress, cancellation):

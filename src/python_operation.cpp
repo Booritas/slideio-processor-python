@@ -3,7 +3,8 @@
 //
 // GIL rules: no OperationFactory method touches Python; it answers from a snapshot of the
 // class's declarations. A stand-in operation takes the GIL only around building the Python
-// instance, apply and the array conversions.
+// instance, apply, the array conversions and recording an error; it waits on its locks
+// without the GIL.
 #include "bindings.hpp"
 
 #include <pybind11/numpy.h>
@@ -17,11 +18,13 @@
 #include <slideio/processor/pipeline/operation_parameters.hpp>
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -116,6 +119,155 @@ bool interpreterAlive() {
 #endif
 }
 
+// Decision 9. A worker that takes the GIL once finalization has begun blocks forever (or,
+// before 3.14, exits the thread mid-call). The stand-ins therefore enter Python only through
+// enterPython(), and an atexit handler, which runs before finalization begins, closes the
+// gate: it sets `exiting` and waits, without the GIL, until every thread that entered has
+// left. A thread raises the counter before reading the flag and the handler sets the flag
+// before reading the counter (both sequentially consistent), so a thread either sees the
+// flag and stays out or is waited for.
+struct ExitGate {
+    std::atomic<bool> exiting{false};
+    std::atomic<int64_t> inPython{0};
+    std::mutex mutex;
+    std::condition_variable left;
+};
+
+// Never destroyed: a worker may still pass through it during static destruction.
+ExitGate& exitGate() {
+    static auto* gate = new ExitGate();
+    return *gate;
+}
+
+void leavePython() noexcept {
+    ExitGate& gate = exitGate();
+    if (gate.inPython.fetch_sub(1) == 1) {
+        std::lock_guard<std::mutex> lock(gate.mutex);
+        gate.left.notify_all();
+    }
+}
+
+// True when the caller may take the GIL; it must then call leavePython() once it has
+// released the GIL again.
+bool enterPython() noexcept {
+    ExitGate& gate = exitGate();
+    gate.inPython.fetch_add(1);
+    if (gate.exiting.load() || !interpreterAlive()) {
+        leavePython();
+        return false;
+    }
+    return true;
+}
+
+// The atexit handler. Called with the GIL held.
+void closePython() {
+    ExitGate& gate = exitGate();
+    gate.exiting.store(true);
+    py::gil_scoped_release release;
+    std::unique_lock<std::mutex> lock(gate.mutex);
+    gate.left.wait(lock, [&gate] { return gate.inPython.load() == 0; });
+}
+
+// Holds the GIL for a stand-in; throws when the interpreter is exiting.
+class PythonScope {
+public:
+    explicit PythonScope(const std::string& name) {
+        if (!enterPython()) throw std::runtime_error("operation '" + name + "': the Python interpreter is exiting");
+        gil_.emplace();
+    }
+    ~PythonScope() {
+        gil_.reset();
+        leavePython();
+    }
+    PythonScope(const PythonScope&) = delete;
+    PythonScope& operator=(const PythonScope&) = delete;
+
+private:
+    std::optional<py::gil_scoped_acquire> gil_;
+};
+
+// Decision 8: at most `limit` apply calls at once per registered name; 0 is no limit.
+// Waited on without the GIL.
+class ConcurrencyGate {
+public:
+    void enter(int32_t limit) {
+        if (limit <= 0) return;
+        std::unique_lock<std::mutex> lock(mutex_);
+        free_.wait(lock, [&] { return active_ < limit; });
+        ++active_;
+    }
+    void leave(int32_t limit) noexcept {
+        if (limit <= 0) return;
+        std::lock_guard<std::mutex> lock(mutex_);
+        --active_;
+        free_.notify_all();
+    }
+
+private:
+    std::mutex mutex_;
+    std::condition_variable free_;
+    int32_t active_ = 0;
+};
+
+class GatePass {
+public:
+    GatePass(ConcurrencyGate& gate, int32_t limit) : gate_(gate), limit_(limit) { gate_.enter(limit_); }
+    ~GatePass() { gate_.leave(limit_); }
+    GatePass(const GatePass&) = delete;
+    GatePass& operator=(const GatePass&) = delete;
+
+private:
+    ConcurrencyGate& gate_;
+    const int32_t limit_;
+};
+
+// What apply's `context` sees of the tile; read-only. The token is the run's and valid only
+// during apply: the stand-in clears it afterwards, and `cancelled` then reads true.
+struct TileContext {
+    int32_t level = 0;
+    sp::Rect64 tileRect{};
+    sp::Rect64 haloRect{};
+    double levelScale = 1;
+    double pixelSizeUm = 0;
+    const sp::CancellationToken* token = nullptr; // read and cleared with the GIL held
+
+    bool cancelled() const noexcept { return token == nullptr || token->isCancelled(); }
+};
+
+py::tuple rectTuple(const sp::Rect64& r) { return py::make_tuple(r.x, r.y, r.width, r.height); }
+
+// Copies `count` elements of `Size` bytes between strided runs.
+template <size_t Size>
+void copyRun(char* dst, py::ssize_t dstStep, const char* src, py::ssize_t srcStep, int64_t count) noexcept {
+    for (int64_t i = 0; i < count; ++i) std::memcpy(dst + i * dstStep, src + i * srcStep, Size);
+}
+
+void copyElements(size_t size, char* dst, py::ssize_t dstStep, const char* src, py::ssize_t srcStep,
+                  int64_t count) noexcept {
+    if (static_cast<py::ssize_t>(size) == dstStep && dstStep == srcStep) {
+        std::memcpy(dst, src, static_cast<size_t>(count) * size);
+        return;
+    }
+    switch (size) {
+    case 1: copyRun<1>(dst, dstStep, src, srcStep, count); break;
+    case 2: copyRun<2>(dst, dstStep, src, srcStep, count); break;
+    case 4: copyRun<4>(dst, dstStep, src, srcStep, count); break;
+    case 8: copyRun<8>(dst, dstStep, src, srcStep, count); break;
+    default:
+        for (int64_t i = 0; i < count; ++i) std::memcpy(dst + i * dstStep, src + i * srcStep, size);
+        break;
+    }
+}
+
+std::string shapeText(const std::vector<py::ssize_t>& shape) {
+    std::string text = "(";
+    for (size_t i = 0; i < shape.size(); ++i) {
+        if (i > 0) text += ", ";
+        text += std::to_string(shape[i]);
+    }
+    return text + (shape.size() == 1 ? ",)" : ")");
+}
+
 // The stage's values of the declared parameters, as a dict; "version" and "targetLayer"
 // are left out. Call with the GIL held.
 py::dict parameterValues(const sp::OperationParameters& parameters, const Snapshot& snapshot) {
@@ -156,28 +308,53 @@ py::dict parameterValues(const sp::OperationParameters& parameters, const Snapsh
     return values;
 }
 
-// The text of the Python exception being handled, "<Type>: <str>". Call with the GIL held.
+// The text of a Python exception, "<Type>: <str>". Never throws a Python error: a type name
+// or str() that fails is replaced by a placeholder. Call with the GIL held.
 std::string describe(const py::error_already_set& e) {
-    std::string text = py::str(py::type::of(e.value()).attr("__name__"));
-    const std::string message = py::str(e.value());
+    std::string text = Py_TYPE(e.value().ptr())->tp_name;
+    try {
+        text = py::str(py::type::of(e.value()).attr("__name__"));
+    } catch (const std::exception&) {
+    }
+    std::string message;
+    try {
+        message = py::str(e.value());
+    } catch (const std::exception&) {
+        message = "<str() of the exception failed>";
+    }
     if (!message.empty()) text += ": " + message;
     return text;
 }
 
+// Decision 7: records the exception for SlideRun.run to chain as the cause. A record that
+// cannot be made is dropped; the error's text still names the exception. Call with the GIL held.
+void recordError(const std::string& name, const py::error_already_set& e) noexcept {
+    try {
+        py::module_::import("slideio_processor.operation").attr("_record_error")(name, e.value());
+    } catch (...) {
+    }
+}
+
 // The operation a run gets for a RASTER class. It builds the Python instance on its
 // first tile, not when it is created: the library creates operations several times per run.
+// Every declaration it reports comes from its own snapshot, so a run keeps the class it
+// started with when the class is redefined meanwhile (decision 2).
 class RasterStandIn final : public sp::Operation {
 public:
-    RasterStandIn(std::string name, SnapshotPtr snapshot, const sp::OperationParameters& parameters)
-        : name_(std::move(name)), snapshot_(std::move(snapshot)), parameters_(parameters) {}
+    RasterStandIn(std::string name, SnapshotPtr snapshot, std::shared_ptr<ConcurrencyGate> gate,
+                  const sp::OperationParameters& parameters)
+        : name_(std::move(name)), snapshot_(std::move(snapshot)), gate_(std::move(gate)), parameters_(parameters) {}
 
     ~RasterStandIn() override {
         if (instance_.ptr() == nullptr) return;
-        if (interpreterAlive()) {
-            py::gil_scoped_acquire gil;
-            instance_ = py::object();
+        if (enterPython()) {
+            {
+                py::gil_scoped_acquire gil;
+                instance_ = py::object();
+            }
+            leavePython();
         } else {
-            instance_.release(); // the interpreter is gone: leak it (decision 9)
+            instance_.release(); // the interpreter is exiting or gone: leak it (decision 9)
         }
     }
 
@@ -193,75 +370,121 @@ public:
 
     void apply(sp::OperationContext& context) override {
         ensureInstance();
+        GatePass pass(*gate_, snapshot_->maxConcurrency);
         const sp::BlockView& in = context.input();
-        sp::BlockView& out = context.output();
         const int64_t height = in.height();
         const int64_t width = in.width();
         const int32_t planes = in.planeCount();
         const sp::DataType inType = in.planeType(0);
-        const auto inSize = static_cast<size_t>(sp::dataTypeSizeBytes(inType));
-        const int64_t offsetX = context.tileRectAtLevel().x - context.haloRectAtLevel().x;
-        const int64_t offsetY = context.tileRectAtLevel().y - context.haloRectAtLevel().y;
+
+        TileContext tileContext;
+        tileContext.level = context.level();
+        tileContext.tileRect = context.tileRectAtLevel();
+        tileContext.haloRect = context.haloRectAtLevel();
+        tileContext.levelScale = context.levelScale();
+        tileContext.pixelSizeUm = context.pixelSizeMicrons();
+        tileContext.token = &context.cancellation();
+        const int64_t offsetX = tileContext.tileRect.x - tileContext.haloRect.x;
+        const int64_t offsetY = tileContext.tileRect.y - tileContext.haloRect.y;
 
         std::string failure;
         {
-            py::gil_scoped_acquire gil;
+            PythonScope python(name_);
             try {
                 py::array tile(py::dtype(numpyName(inType)), std::vector<py::ssize_t>{height, width, planes});
-                auto* dst = static_cast<char*>(tile.mutable_data());
-                for (int64_t y = 0; y < height; ++y) {
-                    for (int32_t p = 0; p < planes; ++p) {
-                        const char* src = static_cast<const char*>(in.planeData(p)) + y * in.planeRowStrideBytes(p);
-                        for (int64_t x = 0; x < width; ++x) {
-                            std::memcpy(dst + ((y * width + x) * planes + p) * inSize, src + x * inSize, inSize);
-                        }
-                    }
+                {
+                    // Only this thread knows the new array: fill it without the GIL.
+                    py::gil_scoped_release release;
+                    fillTile(in, static_cast<char*>(tile.mutable_data()), height, width, planes, inType);
                 }
-                const py::object returned = instance_.attr("apply")(tile, py::none());
-                failure = copyOut(returned, height, width, offsetX, offsetY, out);
+                const py::object contextObject = py::cast(tileContext);
+                py::object returned;
+                try {
+                    returned = instance_.attr("apply")(tile, contextObject);
+                } catch (py::error_already_set& e) {
+                    failure = describe(e);
+                    recordError(name_, e);
+                }
+                contextObject.cast<TileContext&>().token = nullptr; // the token ends with this call
+                if (failure.empty()) failure = copyOut(returned, height, width, offsetX, offsetY, context.output());
             } catch (py::error_already_set& e) {
-                failure = describe(e);
+                failure = "operation '" + name_ + "': " + describe(e);
             }
         }
         if (!failure.empty()) throw std::runtime_error(failure);
     }
 
 private:
-    // Decision 4: the mutex is taken without the GIL, then the GIL inside it.
+    enum State : int { Pending, Ready, Failed };
+
+    // Decision 4: the mutex is taken without the GIL, then the GIL inside it. A failed
+    // construction is kept: later tiles fail with the same text and __init__ runs once.
     void ensureInstance() {
-        if (ready_.load(std::memory_order_acquire)) return;
+        int state = state_.load(std::memory_order_acquire);
+        if (state == Ready) return;
+        if (state == Failed) throw std::runtime_error(initFailure_);
         std::lock_guard<std::mutex> lock(instanceMutex_);
-        if (ready_.load(std::memory_order_relaxed)) return;
+        state = state_.load(std::memory_order_relaxed);
+        if (state == Ready) return;
+        if (state == Failed) throw std::runtime_error(initFailure_);
         std::string failure;
         {
-            py::gil_scoped_acquire gil;
+            PythonScope python(name_);
             try {
                 py::handle cls(snapshot_->cls);
                 instance_ = py::module_::import("slideio_processor.operation")
                                 .attr("_instantiate")(cls, parameterValues(parameters_, *snapshot_));
             } catch (py::error_already_set& e) {
                 failure = describe(e);
+                recordError(name_, e);
             }
         }
-        if (!failure.empty()) throw std::runtime_error(failure);
-        ready_.store(true, std::memory_order_release);
+        if (!failure.empty()) {
+            initFailure_ = failure;
+            state_.store(Failed, std::memory_order_release);
+            throw std::runtime_error(failure);
+        }
+        state_.store(Ready, std::memory_order_release);
     }
 
-    // Copies the tile region of what apply returned into the output; returns a failure
-    // text, or "". Call with the GIL held.
+    // Interleaves the input planes into a C-contiguous (height, width, planes) buffer.
+    static void fillTile(const sp::BlockView& in, char* dst, int64_t height, int64_t width, int32_t planes,
+                         sp::DataType type) noexcept {
+        const auto size = static_cast<size_t>(sp::dataTypeSizeBytes(type));
+        const auto pixelStep = static_cast<py::ssize_t>(size) * planes;
+        for (int64_t y = 0; y < height; ++y) {
+            char* row = dst + y * width * pixelStep;
+            for (int32_t p = 0; p < planes; ++p) {
+                const char* src = static_cast<const char*>(in.planeData(p)) + y * in.planeRowStrideBytes(p);
+                copyElements(size, row + p * size, pixelStep, src, static_cast<py::ssize_t>(size), width);
+            }
+        }
+    }
+
+    // Decision 6: checks what apply returned, then copies its tile region, which starts at
+    // (offsetX, offsetY), into the output. Returns a failure text, or "". Call with the GIL held.
     std::string copyOut(const py::object& returned, int64_t height, int64_t width, int64_t offsetX, int64_t offsetY,
                         sp::BlockView& out) const {
-        const std::string label = "operation '" + name_ + "': apply ";
-        if (!py::isinstance<py::array>(returned)) return label + "did not return a numpy.ndarray";
+        const std::string label = "operation '" + name_ + "': apply returned ";
+        if (!py::isinstance<py::array>(returned)) {
+            return label + Py_TYPE(returned.ptr())->tp_name + ", expected a numpy.ndarray";
+        }
         const auto array = py::reinterpret_borrow<py::array>(returned);
         const int32_t planes = snapshot_->outputPlanes;
-        const py::dtype expected(numpyName(snapshot_->outputType));
-        if (!array.dtype().equal(expected)) return label + "returned the wrong dtype";
+        const char* expected = numpyName(snapshot_->outputType);
+        if (!array.dtype().equal(py::dtype(expected))) {
+            return label + "dtype " + std::string(py::str(array.dtype())) + ", expected " + expected;
+        }
         const bool shapeOk = array.ndim() == 3 ? array.shape(2) == planes : array.ndim() == 2 && planes == 1;
-        if (!shapeOk || array.shape(0) != height || array.shape(1) != width) return label + "returned the wrong shape";
+        if (!shapeOk || array.shape(0) != height || array.shape(1) != width) {
+            const std::vector<py::ssize_t> actual(array.shape(), array.shape() + array.ndim());
+            std::string wanted = planes == 1 ? shapeText({height, width}) + " or " : std::string();
+            wanted += shapeText({height, width, planes});
+            return label + "shape " + shapeText(actual) + ", expected " + wanted;
+        }
         if (out.planeCount() != planes || offsetX < 0 || offsetY < 0 || offsetX + out.width() > width ||
             offsetY + out.height() > height) {
-            return label + "the output does not fit the returned array";
+            return "operation '" + name_ + "': the output does not fit the returned array";
         }
         const auto size = static_cast<size_t>(sp::dataTypeSizeBytes(snapshot_->outputType));
         const auto* base = static_cast<const char*>(array.data());
@@ -269,10 +492,9 @@ private:
         for (int32_t p = 0; p < planes; ++p) {
             for (int64_t y = 0; y < out.height(); ++y) {
                 char* dst = static_cast<char*>(out.planeData(p)) + y * out.planeRowStrideBytes(p);
-                const char* row = base + (y + offsetY) * array.strides(0) + p * planeStride;
-                for (int64_t x = 0; x < out.width(); ++x) {
-                    std::memcpy(dst + x * size, row + (x + offsetX) * array.strides(1), size);
-                }
+                const char* src =
+                    base + (y + offsetY) * array.strides(0) + offsetX * array.strides(1) + p * planeStride;
+                copyElements(size, dst, static_cast<py::ssize_t>(size), src, array.strides(1), out.width());
             }
         }
         return {};
@@ -280,10 +502,12 @@ private:
 
     const std::string name_;
     const SnapshotPtr snapshot_;
+    const std::shared_ptr<ConcurrencyGate> gate_; // the registered name's (decision 8)
     const sp::OperationParameters parameters_;
     std::mutex instanceMutex_;
-    std::atomic<bool> ready_{false};
-    py::object instance_; // set once under instanceMutex_ and the GIL
+    std::atomic<int> state_{Pending};
+    std::string initFailure_; // written once, before state_ becomes Failed
+    py::object instance_;     // set once under instanceMutex_ and the GIL
 };
 
 // The catalog's factory for one registered name. A redefinition swaps its snapshot.
@@ -310,13 +534,15 @@ public:
             // Task 4 adds the LABELS stand-in.
             throw sp::InvalidArgumentError(("operation '" + name_ + "': LABELS operations cannot run yet").c_str());
         }
-        return std::make_shared<RasterStandIn>(name_, std::move(s), parameters);
+        return std::make_shared<RasterStandIn>(name_, std::move(s), gate_, parameters);
     }
 
     const char* name() const override { return name_.c_str(); }
     sp::ChannelArity arity() const override { return sp::ChannelArity::Joint; }
     bool requiresUniformTypes() const override { return true; }
     sp::DataTypeSet supportedTypes() const override { return sp::DataTypeSet::all(); }
+    // These answer from the current snapshot: what the next run gets. A stand-in already
+    // created answers from its own, and the library takes the stand-in's word (decision 2).
     sp::Halo halo() const override { return sp::Halo::uniform(snapshot()->halo); }
     const char* correctnessReference() const override { return "a Python class; see its origin"; }
     const char* complexityNote() const override { return ""; }
@@ -363,6 +589,7 @@ private:
     }
 
     const std::string name_;
+    const std::shared_ptr<ConcurrencyGate> gate_ = std::make_shared<ConcurrencyGate>(); // per name
     mutable std::mutex mutex_;
     SnapshotPtr current_;
     std::vector<SnapshotPtr> history_;
@@ -422,6 +649,23 @@ void registerPythonOperation(const py::handle& cls, const py::dict& snapshot) {
 } // namespace
 
 void bindOperations(py::module_& m) {
+    py::class_<TileContext>(m, "TileContext",
+                            "What apply's context sees of the tile: read-only, and valid only during apply.")
+        .def_readonly("level", &TileContext::level, "The analysis level, 0 for full resolution.")
+        .def_property_readonly(
+            "tile_rect", [](const TileContext& c) { return rectTuple(c.tileRect); },
+            "(x, y, width, height) of the tile at the analysis level.")
+        .def_property_readonly(
+            "halo_rect", [](const TileContext& c) { return rectTuple(c.haloRect); },
+            "(x, y, width, height) of the tile grown by the halo, at the analysis level; not clipped to the level.")
+        .def_readonly("level_scale", &TileContext::levelScale, "The factor from the analysis level to level 0.")
+        .def_readonly("pixel_size_um", &TileContext::pixelSizeUm,
+                      "The level-0 pixel size in micrometres; 0 when unknown.")
+        .def_property_readonly("cancelled", &TileContext::cancelled,
+                               "True once the run is cancelled; always True after apply has returned.");
+    // Python runs atexit handlers after joining its non-daemon threads and before it begins
+    // finalizing: from then on the stand-ins stay out of Python (decision 9).
+    py::module_::import("atexit").attr("register")(py::cpp_function(&closePython));
     m.def("_register_python_operation", &registerPythonOperation, py::arg("cls"), py::arg("snapshot"),
           "Registers, or redefines, a Python operation from its class and snapshot.");
     m.def(

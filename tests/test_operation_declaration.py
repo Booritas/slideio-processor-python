@@ -237,3 +237,25 @@ def test_exit_after_registration_is_clean(tmp_path):
     done = subprocess.run([sys.executable, "-c", code], cwd=tmp_path, capture_output=True, text=True, timeout=120)
     assert done.returncode == 0, done.stderr
     assert done.stderr == ""
+
+
+def test_output_dtype_none_refused():
+    with pytest.raises(InvalidArgumentError, match="output_dtype"):
+        class NoDtype(Operation):
+            name = "test.output_dtype_none_refused"
+            version = "1"
+            output = Output.RASTER
+            output_dtype = None
+
+            def apply(self, tile, context):
+                return _mean(tile)
+
+    assert "test.output_dtype_none_refused" not in registered_operations()
+
+
+def test_stage_parameters_without_version_refused():
+    class Base(Operation):
+        output = Output.RASTER
+
+    with pytest.raises(InvalidArgumentError, match="version"):
+        Base.stage_parameters()

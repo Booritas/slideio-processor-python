@@ -34,6 +34,10 @@ _DATA_TYPES = {
 }
 
 
+TileContext = _native.TileContext
+TileContext.__module__ = __name__
+
+
 class Output(enum.Enum):
     """What an operation's apply returns: a label image the library turns into objects,
     or a raster."""
@@ -129,10 +133,12 @@ def _snapshot(cls):
 
     output_type, output_planes = "Int32", 1
     if output is Output.RASTER:
-        try:
-            dtype = numpy.dtype(cls.output_dtype)
-        except TypeError:
-            dtype = None
+        dtype = None
+        if cls.output_dtype is not None:  # numpy.dtype(None) is float64
+            try:
+                dtype = numpy.dtype(cls.output_dtype)
+            except (TypeError, ValueError):
+                pass
         if dtype not in _DATA_TYPES:
             refuse(f"output_dtype {cls.output_dtype!r} is not one of "
                    + ", ".join(str(d) for d in _DATA_TYPES))
@@ -195,8 +201,11 @@ class Operation:
         "version". The base does nothing."""
 
     def apply(self, tile, context):
-        """Returns the result for one tile: a (height, width, planes) array over the halo
-        rect. Subclasses must override it."""
+        """Returns the result for one tile. `tile` is a C-contiguous copy of the input,
+        shaped (height, width, planes), over the halo rect; `context` is a TileContext,
+        valid only during the call. A RASTER operation returns an array of output_dtype
+        shaped (height, width, output_planes), or (height, width) for one plane.
+        Subclasses must override it."""
         raise NotImplementedError
 
     @classmethod
@@ -209,9 +218,13 @@ class Operation:
         for key in values:
             if key not in allowed:
                 raise InvalidArgumentError(f"operation {getattr(cls, 'name', None)!r}: unknown parameter {key!r}")
+        version = getattr(cls, "version", None)
+        if not isinstance(version, str) or not version:
+            raise InvalidArgumentError(f"operation {getattr(cls, 'name', None)!r}: class {cls.__qualname__} "
+                                       f"has no version")
         result = dict(cls.parameters)
         result.update(values)
-        result["version"] = cls.version
+        result["version"] = version
         return result
 
 
