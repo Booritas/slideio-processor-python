@@ -44,6 +44,7 @@ option(SLIDEIO_PROCESSOR_PYTHON_TEST_HELPERS "Build the native helpers the tests
 
 pybind11_add_module(slideio_processor_native
     src/module.cpp
+    src/configuration.cpp
     src/errors.cpp
     src/pipeline_file.cpp
     src/python_operation.cpp

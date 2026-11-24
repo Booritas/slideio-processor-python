@@ -4,6 +4,7 @@ from ._loader import load_native
 
 _native = load_native()
 
+from .configuration import Configuration, LogLevel, configure_logging  # noqa: E402
 from .errors import (  # noqa: E402  (after the native module is loaded)
     CancelledError,
     ChannelArityError,
@@ -38,4 +39,5 @@ __all__ = [
     "ExportKind", "ExportSpec", "PipelineFile",
     "Cancellation", "ExportResult", "SlideRun", "SlideRunResult", "StageResult",
     "Operation", "Output", "TileContext", "registered_operations",
+    "Configuration", "LogLevel", "configure_logging",
 ]

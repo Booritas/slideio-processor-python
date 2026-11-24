@@ -122,13 +122,14 @@ void bindRun(py::module_& m) {
 
     py::class_<sp::SlideRun>(m, "_SlideRun")
         .def(py::init([](const sp::PipelineFile& file, const std::string& slide, int32_t scene,
-                         const std::string& workspace, const std::string& out, const std::string& slideId) {
+                         const std::string& workspace, const std::string& out, const std::string& slideId,
+                         const sp::Configuration& configuration) {
                  auto slideRun = std::make_unique<sp::SlideRun>(file, slide.c_str(), scene, workspace.c_str(),
-                                                                out.c_str(), sp::Configuration::defaults());
+                                                                out.c_str(), configuration);
                  slideRun->slideId(slideId.c_str());
                  return slideRun;
              }),
              py::arg("file"), py::arg("slide"), py::arg("scene"), py::arg("workspace"), py::arg("out"),
-             py::arg("slide_id"))
+             py::arg("slide_id"), py::arg("configuration"))
         .def("run", &run, py::arg("progress"), py::arg("cancellation"));
 }

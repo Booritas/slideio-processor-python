@@ -6,6 +6,7 @@ from typing import Callable, Optional, Tuple
 
 from . import operation as _operation
 from ._loader import load_native
+from .configuration import Configuration
 from .errors import InvalidArgumentError, ProcessorError
 from .pipeline_file import _path_string, _text
 
@@ -69,12 +70,13 @@ class SlideRun:
     The workspace directory is created on the first run and reused by later ones, which
     run only the stages that are not current. The exports go to the out directory. The
     paths are str or os.PathLike. slide_id is the identifier the CSV and GeoJSON exports
-    carry; the default "" means they carry none.
+    carry; the default "" means they carry none. configuration is a Configuration; None
+    means the library defaults.
     """
 
     __slots__ = ("_run", "_lock", "_requires")
 
-    def __init__(self, pipeline, slide, workspace, out, *, scene=0, slide_id=""):
+    def __init__(self, pipeline, slide, workspace, out, *, scene=0, slide_id="", configuration=None):
         # Outside int32, pybind11's conversion would fail with a TypeError that
         # repeats every argument; refuse here with a clean message.
         # Negative scenes inside int32 are refused by the library, with its own message.
@@ -82,8 +84,12 @@ class SlideRun:
             raise InvalidArgumentError(f"SlideRun: the scene must be an int, got {scene!r}")
         if not _INT32_MIN <= scene <= _INT32_MAX:
             raise InvalidArgumentError(f"SlideRun: the scene {scene} is out of range")
+        if configuration is None:
+            configuration = Configuration()
+        elif not isinstance(configuration, Configuration):
+            raise TypeError(f"SlideRun: the configuration must be a Configuration, got {configuration!r}")
         self._run = _native._SlideRun(pipeline._file, _path_string(slide), scene, _path_string(workspace),
-                                      _path_string(out), _text(slide_id, "the slide id"))
+                                      _path_string(out), _text(slide_id, "the slide id"), configuration._native())
         self._lock = threading.Lock()
         self._requires = tuple(pipeline.requires)
 
