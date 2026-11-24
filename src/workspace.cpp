@@ -33,6 +33,7 @@ namespace {
 namespace sp = slideio::processor;
 using slideio_processor_python::numpyName;
 using ScenePointer = std::shared_ptr<slideio::Scene>;
+using WorkspaceHolder = std::shared_ptr<sp::Workspace>;
 
 constexpr const char* kCapsuleName = "slideio.Scene";
 
@@ -158,17 +159,34 @@ void declareRaster(sp::Workspace& workspace, const std::string& name, sp::DataTy
     rasters.declare(sp::RasterDeclaration(name.c_str(), type, planes));
 }
 
+// The holder Python keeps. It shares ownership of the library's workspace and, when it is
+// the last owner, drops it with the GIL released: ~Workspace closes the store and waits on
+// library locks, which must never happen with the GIL held (a worker thread logging through
+// the Python sink would deadlock). The deleter may run on a thread without the GIL (a C++
+// thread dropping the last copy), so it releases the GIL only when this thread holds it.
+WorkspaceHolder holderOf(sp::WorkspacePtr workspace) {
+    sp::Workspace* raw = workspace.get();
+    return WorkspaceHolder(raw, [owned = std::move(workspace)](sp::Workspace*) mutable {
+        if (Py_IsInitialized() != 0 && PyGILState_Check() != 0) {
+            py::gil_scoped_release release;
+            owned.reset();
+        } else {
+            owned.reset();
+        }
+    });
+}
+
 } // namespace
 
 void bindWorkspace(py::module_& m) {
     using Release = py::call_guard<py::gil_scoped_release>;
 
-    py::class_<sp::Workspace, std::shared_ptr<sp::Workspace>>(m, "_Workspace")
+    py::class_<sp::Workspace, WorkspaceHolder>(m, "_Workspace")
         .def_static(
             "create_from_path",
             [](const std::string& path, const std::string& slidePath, int32_t scene,
                const sp::Configuration& configuration) {
-                return sp::Workspace::create(path.c_str(), slidePath.c_str(), scene, configuration);
+                return holderOf(sp::Workspace::create(path.c_str(), slidePath.c_str(), scene, configuration));
             },
             py::arg("path"), py::arg("slide_path"), py::arg("scene"), py::arg("configuration"), Release())
         .def_static(
@@ -177,14 +195,14 @@ void bindWorkspace(py::module_& m) {
                const sp::Configuration& configuration) {
                 ScenePointer pointer = sceneOf(capsule);
                 py::gil_scoped_release release;
-                return sp::Workspace::create(path.c_str(), std::move(pointer), slidePath.c_str(), scene,
-                                             configuration);
+                return holderOf(sp::Workspace::create(path.c_str(), std::move(pointer), slidePath.c_str(), scene,
+                                                      configuration));
             },
             py::arg("path"), py::arg("capsule"), py::arg("slide_path"), py::arg("scene"), py::arg("configuration"))
         .def_static(
             "open",
             [](const std::string& path, const sp::Configuration& configuration) {
-                return sp::Workspace::open(path.c_str(), configuration);
+                return holderOf(sp::Workspace::open(path.c_str(), configuration));
             },
             py::arg("path"), py::arg("configuration"), Release())
         .def_static(
@@ -193,13 +211,13 @@ void bindWorkspace(py::module_& m) {
                const sp::Configuration& configuration) {
                 ScenePointer pointer = sceneOf(capsule);
                 py::gil_scoped_release release;
-                return sp::Workspace::open(path.c_str(), std::move(pointer), scene, configuration);
+                return holderOf(sp::Workspace::open(path.c_str(), std::move(pointer), scene, configuration));
             },
             py::arg("path"), py::arg("capsule"), py::arg("scene"), py::arg("configuration"))
         .def_static(
             "open_read_only",
             [](const std::string& path, const sp::Configuration& configuration) {
-                return sp::Workspace::openReadOnly(path.c_str(), configuration);
+                return holderOf(sp::Workspace::openReadOnly(path.c_str(), configuration));
             },
             py::arg("path"), py::arg("configuration"), Release())
         .def("path", [](sp::Workspace& self) { return std::string(self.path()); }, Release())

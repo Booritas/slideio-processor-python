@@ -109,7 +109,8 @@ class Workspace:
     tell. Reopening the workspace without a scene reopens the slide by its recorded path.
 
     Layers and rasters are named by str. Declaring one that exists with the same definition
-    does nothing; with another definition it raises InvalidArgumentError. A closed
+    does nothing; with another definition it raises InvalidArgumentError. In a read-only
+    workspace every declare and drop raises IoError, whatever it names. A closed
     workspace still answers path, slide_path, scene_index, read_only and closed; every other
     member raises IoError.
     """
@@ -216,6 +217,14 @@ class Workspace:
             raise IoError("Workspace: the workspace is closed")
         return self._native
 
+    def _writable_handle(self):
+        """The native workspace; raises IoError once it is closed or when it is read-only,
+        before anything is looked up."""
+        handle = self._handle()
+        if self._read_only:
+            raise IoError("Workspace: the workspace is read-only")
+        return handle
+
     @property
     def layers(self) -> Tuple[Layer, ...]:
         """The declared layers in declaration order, the pixel layer excluded."""
@@ -226,19 +235,22 @@ class Workspace:
     def declare_layer(self, name, *, parent=None) -> None:
         """Declares a semantic layer directly above parent, a semantic layer's name; None
         puts it directly above the pixel layer."""
+        handle = self._writable_handle()
         name = _name(name, "the layer name")
         if parent is not None:
             parent = _name(parent, "the parent name")
-        self._handle().declare_layer(name, parent)
+        handle.declare_layer(name, parent)
 
     def declare_primitive_layer(self, name) -> None:
         """Declares a primitive layer, outside the semantic hierarchy."""
-        self._handle().declare_primitive_layer(_name(name, "the layer name"))
+        handle = self._writable_handle()
+        handle.declare_primitive_layer(_name(name, "the layer name"))
 
     def drop_layer(self, name) -> None:
         """Discards every object of a primitive layer, keeping the layer. Objects derived
         from it stay; no stage becomes stale. Dropping a dropped layer does nothing."""
-        self._handle().drop_layer(_name(name, "the layer name"))
+        handle = self._writable_handle()
+        handle.drop_layer(_name(name, "the layer name"))
 
     @property
     def rasters(self) -> Tuple[Raster, ...]:
@@ -249,16 +261,19 @@ class Workspace:
     def declare_raster(self, name, dtype, *, planes=1) -> None:
         """Declares a raster of planes planes of dtype (anything numpy.dtype() accepts that
         is an 8- to 64-bit integer or a 16-, 32- or 64-bit float)."""
+        handle = self._writable_handle()
         name = _name(name, "the raster name")
         try:
             resolved = numpy.dtype(dtype)
-        except TypeError:
+        except (TypeError, ValueError):
             raise InvalidArgumentError(f"Workspace: {dtype!r} is not a NumPy dtype") from None
         if resolved not in _RASTER_DTYPES:
+            # repr shows a non-native byte order (dtype('>f4')), where .name would say float32.
             raise InvalidArgumentError(
-                f"Workspace: dtype {resolved.name!r} is not one of {[d.name for d in _RASTER_DTYPES]}")
+                f"Workspace: {resolved!r} is not a raster dtype; use one of "
+                f"{[d.name for d in _RASTER_DTYPES]}, in native byte order")
         if not isinstance(planes, int) or isinstance(planes, bool):
             raise TypeError(f"Workspace: planes must be an int, got {planes!r}")
         if not 1 <= planes <= _MAX_PLANES:
             raise InvalidArgumentError(f"Workspace: planes must be from 1 to {_MAX_PLANES}, got {planes}")
-        self._handle().declare_raster(name, resolved.name, int(planes))
+        handle.declare_raster(name, resolved.name, int(planes))

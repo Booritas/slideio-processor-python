@@ -1,4 +1,5 @@
 """Workspace: create and open over a path or a slideio.Scene, layers and rasters."""
+import gc
 import os
 
 import numpy
@@ -214,3 +215,43 @@ def test_invalid_capsule_refused(blob_slide, tmp_path):
 
     with pytest.raises(InvalidArgumentError, match="path or a slideio.Scene"):
         Workspace.create(tmp_path / "ws", Fake(), scene=0)
+
+
+def test_unclosed_workspace_dropped_releases_lock(blob_slide, tmp_path):
+    ws = Workspace.create(tmp_path / "ws", blob_slide)
+    ws.declare_layer("tissue")
+    del ws
+    gc.collect()
+    # The destructor closed the store (with the GIL released): the lock is free again.
+    with Workspace.open(tmp_path / "ws") as again:
+        assert [layer.name for layer in again.layers] == ["tissue"]
+
+
+def test_read_only_refuses_every_declare(blob_slide, tmp_path):
+    with Workspace.create(tmp_path / "ws", blob_slide) as ws:
+        ws.declare_layer("tissue")
+        ws.declare_primitive_layer("fragments")
+        ws.declare_raster("prob", "float32")
+    with Workspace.open_read_only(tmp_path / "ws") as reader:
+        # Identical to what exists, yet refused: a read-only workspace declares nothing.
+        with pytest.raises(IoError, match="read-only"):
+            reader.declare_layer("tissue")
+        with pytest.raises(IoError, match="read-only"):
+            reader.declare_primitive_layer("fragments")
+        with pytest.raises(IoError, match="read-only"):
+            reader.declare_raster("prob", "float32")
+        with pytest.raises(IoError, match="read-only"):
+            reader.drop_layer("fragments")
+        with pytest.raises(IoError, match="read-only"):
+            reader.drop_layer("nowhere")
+
+
+def test_raster_dtype_messages(blob_slide, tmp_path):
+    with Workspace.create(tmp_path / "ws", blob_slide) as ws:
+        with pytest.raises(InvalidArgumentError, match=">f4"):
+            ws.declare_raster("big", ">f4")
+        with pytest.raises(InvalidArgumentError, match="not a NumPy dtype"):
+            ws.declare_raster("bad", "not-a-dtype")
+        with pytest.raises(InvalidArgumentError, match="not a NumPy dtype"):
+            ws.declare_raster("bad", (numpy.float32, -1))
+        assert ws.rasters == ()
