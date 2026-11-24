@@ -50,7 +50,7 @@
    - The catalog never removes a factory, and its static destructor runs after Python has finalized. The factory therefore holds its class as a strong reference that it never releases.
    - A stand-in that is destroyed while the interpreter is alive takes the GIL to drop its instance. When `Py_IsInitialized()` is false or the interpreter is finalizing, it leaks the instance instead.
    - An atexit exit gate (`closePython`) closes the entry to Python: once it has run, stand-ins no longer enter Python and leak their instances. It waits, with the GIL released, for threads inside Python to leave.
-10. **`requires` is imported by `SlideRun.run`** on the calling thread, before the native run starts. A module that fails to import raises `InvalidArgumentError` naming the module, chained to the `ImportError`. The CLI adds nothing to `sys.path`; modules must be importable, for example installed or on `PYTHONPATH`.
+10. **`requires` is imported by `SlideRun.run`** on the calling thread, before the native run starts. A module that fails to import raises `InvalidArgumentError` naming the module, chained to the exception the import raised (an `ImportError`, or whatever the module body raises). The CLI adds nothing to `sys.path`; modules must be importable, for example installed or on `PYTHONPATH`.
 11. **Origin** (provenance) is `"<module>:<qualname>"`, plus `" <version>"` when the module, or failing that its top-level package, has a `__version__`. The library writes it to the stage record (Task 1).
 
 ## Global Constraints

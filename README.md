@@ -1,4 +1,4 @@
-﻿# slideio-processor
+# slideio-processor
 
 Python bindings for the C++ library slideio-processor: run a pipeline file against a slide
 scene, from Python or from the command line.
