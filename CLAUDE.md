@@ -61,3 +61,21 @@ cd <an empty directory outside the checkout>; python -m pytest <repo>/tests -v
 Messages may carry paths and argument values (decision 2026-11-23: the software runs in a
 secure environment). Argument validation still runs before native calls, so a bad argument gives
 an InvalidArgumentError naming the value (repr) instead of pybind11's overload noise.
+
+## Python operations
+
+Code: `slideio_processor/operation.py` (`Operation`, registration, declarations, error
+records), `src/python_operation.cpp` (factory and stand-in operations), `src/python_runtime.*`
+(shared helpers), `slideio_processor/run.py` (`requires` import, cause chaining). Tests:
+`tests/test_operation_*.py`; `tests/data/opmodule/sample_ops.py` is the `requires` fixture.
+
+- GIL rules: no `OperationFactory` method touches Python (the factory answers from a C++
+  snapshot of the class's declarations). A stand-in takes the GIL only around `__init__`,
+  `apply`, array conversions and recording an error; it waits on the construction mutex and on
+  the `max_concurrency` semaphore with the GIL released (mutex before GIL, never the reverse).
+- Decision 4: one Python instance per stand-in, built on its first tile.
+- Decision 7: the cause is chained through a Python-side record list keyed by operation name
+  (`_record_error`, `_take_errors`); `SlideRun.run` attaches the first record since its mark as
+  `__cause__`. Concurrent runs of one operation in a process can cross-attach; documented.
+- Decision 9: the factory keeps its class as a strong reference never released; a stand-in
+  destroyed after the interpreter finalizes leaks its instance.

@@ -1,5 +1,6 @@
 """SlideRun: runs a pipeline file against one slide scene and writes its exports."""
 import dataclasses
+import importlib
 import threading
 from typing import Callable, Optional, Tuple
 
@@ -71,7 +72,7 @@ class SlideRun:
     carry; the default "" means they carry none.
     """
 
-    __slots__ = ("_run", "_lock")
+    __slots__ = ("_run", "_lock", "_requires")
 
     def __init__(self, pipeline, slide, workspace, out, *, scene=0, slide_id=""):
         # Outside int32, pybind11's conversion would fail with a TypeError that
@@ -84,6 +85,7 @@ class SlideRun:
         self._run = _native._SlideRun(pipeline._file, _path_string(slide), scene, _path_string(workspace),
                                       _path_string(out), _text(slide_id, "the slide id"))
         self._lock = threading.Lock()
+        self._requires = tuple(pipeline.requires)
 
     def run(self, *, progress: Optional[Callable[[str, float, int, int], None]] = None,
             cancellation: Optional[Cancellation] = None) -> SlideRunResult:
@@ -97,8 +99,12 @@ class SlideRun:
         raises KeyboardInterrupt once the run has stopped. A cancelled run raises
         CancelledError and leaves no partial file.
 
-        When a Python operation's __init__ or apply raises, the run raises a ProcessorError
+        When a Python operation's __init__ or apply raises, the run raises a StageError
         naming the operation, with that exception as its __cause__.
+
+        The pipeline file's `requires` modules are imported first, on the calling thread. A
+        module that fails to import raises InvalidArgumentError naming it, with the
+        ImportError as its __cause__, before the workspace is touched.
 
         One object runs once at a time: run() while another run() of the same object is
         in progress raises InvalidArgumentError.
@@ -106,6 +112,12 @@ class SlideRun:
         if not self._lock.acquire(blocking=False):
             raise InvalidArgumentError("SlideRun: a run of this object is already in progress")
         try:
+            for module in self._requires:
+                try:
+                    importlib.import_module(module)
+                except ImportError as error:
+                    raise InvalidArgumentError(
+                        f"SlideRun: the required module {module!r} cannot be imported: {error}") from error
             mark = _operation._error_mark()
             try:
                 return self._run_locked(progress, cancellation)
