@@ -1,6 +1,9 @@
 """Workspace.export: the four export kinds, slide ids, read-only workspaces, refusals and cancellation."""
+import _thread
 import json
 import os
+import threading
+import time
 
 import numpy
 import pytest
@@ -107,6 +110,47 @@ def test_export_cancelled_leaves_no_file(nuclei_workspace, tmp_path):
         nuclei_workspace.export(ExportSpec.csv("n.csv", "nuclei"), out, cancellation=c)
     assert not (out / "n.csv").exists()
     assert not (out / "n.csv.partial").exists()
+
+
+def test_export_keyboard_interrupt(nuclei_workspace, tmp_path):
+    """Ctrl-C during an export raises KeyboardInterrupt chained from the export's
+    CancelledError, as run_stage's is, and leaves no file of that export. A raster TIFF
+    export reports progress after each tile and checks the cancellation before the next,
+    so the progress callable holds the first tile until Ctrl-C has cancelled the export.
+    (A CSV of nine objects reports progress only once, after its last object.)"""
+    ws = nuclei_workspace
+    ws.declare_raster("blur", "float32")
+    ws.declare_stage(StageDefinition(
+        "blur",
+        PipelineSpec().add("pixel.colour_convert", **{"from": "Rgb", "to": "Grey"}).add("pixel.gaussian_blur"),
+        writes_raster="blur"))
+    ws.run_stage("blur")
+    started = threading.Event()
+    c = Cancellation()
+
+    def progress(name, fraction, completed, total):
+        assert fraction < 1.0, "the export has one tile only: nothing left to cancel"
+        started.set()
+        deadline = time.monotonic() + 30
+        while not c.cancelled and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    def interrupt():
+        if started.wait(30):
+            _thread.interrupt_main()
+
+    out = tmp_path / "out"
+    timer = threading.Thread(target=interrupt)
+    timer.start()
+    try:
+        with pytest.raises(KeyboardInterrupt) as info:
+            ws.export(ExportSpec.raster_tiff("blur.tif", "blur"), out, progress=progress, cancellation=c)
+    finally:
+        timer.join()
+    assert isinstance(info.value.__cause__, CancelledError)
+    assert str(info.value.__cause__) == "Workspace: the rasterTiff export was cancelled"
+    assert not (out / "blur.tif").exists()
+    assert not (out / "blur.tif.partial").exists()
 
 
 def test_export_progress_raises(nuclei_workspace, tmp_path):

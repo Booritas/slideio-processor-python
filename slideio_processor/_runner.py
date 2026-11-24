@@ -15,10 +15,13 @@ def run_interruptibly(call: Callable[[], T], cancellation) -> T:
     Cancellation call() watches.
 
     Ctrl-C cancels it and raises KeyboardInterrupt once call() has stopped, chained from
-    the exception call() then raised (normally a CancelledError). When call() raises, that
-    exception is raised here with the __context__ call() gave it.
+    the exception call() then raised (normally a CancelledError). A further Ctrl-C while
+    call() is stopping does not end the wait: this function returns only once call() has
+    finished, so the caller's cleanup never runs under a live native call. When call()
+    raises, that exception is raised here with the __context__ call() gave it.
     """
     outcome = {}
+    finished = []  # appended to, before done is released, once outcome is final
     done = threading.Lock()
     done.acquire()
 
@@ -28,6 +31,7 @@ def run_interruptibly(call: Callable[[], T], cancellation) -> T:
         except BaseException as error:  # noqa: B036  (handed to the calling thread)
             outcome["error"] = error
         finally:
+            finished.append(True)
             done.release()
 
     # The call happens on its own thread so that this one stays in an interruptible
@@ -40,8 +44,16 @@ def run_interruptibly(call: Callable[[], T], cancellation) -> T:
         while not done.acquire(timeout=0.1):
             pass
     except KeyboardInterrupt:
-        cancellation.cancel()
-        t.join()
+        # Waits for call() to stop, whatever further Ctrl-Cs arrive: each one is swallowed
+        # and the cancellation asserted again. The flag, not the lock, ends the loop, so an
+        # interrupt that lands just after the lock was taken cannot make it wait forever.
+        # No join(): it is interruptible on POSIX, and call() has finished already.
+        while not finished:
+            try:
+                cancellation.cancel()
+                done.acquire(timeout=0.1)
+            except KeyboardInterrupt:
+                pass
         raise KeyboardInterrupt from outcome.get("error")
     t.join()
     if "error" in outcome:

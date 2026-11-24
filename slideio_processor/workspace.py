@@ -1,4 +1,5 @@
 """Workspace: the directory that binds one slide scene to a store, with its layers and rasters."""
+import contextlib
 import dataclasses
 import enum
 import os
@@ -133,9 +134,9 @@ class Workspace:
     workspace still answers path, slide_path, scene_index, read_only and closed; every other
     member raises IoError.
 
-    One long call (run_stage or export) of an object runs at a time: a second one, or
-    close(), while it is in progress raises InvalidArgumentError. Queries may run alongside
-    it from other threads.
+    One long call (run_stage or export) of an object runs at a time: a second one, close(),
+    or any declare, drop or mark_stale of the object while it is in progress raises
+    InvalidArgumentError. Queries may run alongside it from other threads.
     """
 
     __slots__ = ("_native", "_closed", "_path", "_slide_path", "_scene_index", "_read_only", "_state", "_running")
@@ -257,19 +258,32 @@ class Workspace:
         with self._state:
             self._running = False
 
+    @contextlib.contextmanager
+    def _mutation(self, what):
+        """Holds _state around one declare, drop or mark_stale of the native workspace, so
+        that neither close() nor a long call starts meanwhile, and refuses it while a long
+        call of this object is in progress (decision 8: only queries run alongside one).
+        Validate the arguments before entering: _state is not reentrant."""
+        with self._state:
+            if self._closed:
+                raise IoError("Workspace: the workspace is closed")
+            if self._running:
+                raise InvalidArgumentError(
+                    f"Workspace: cannot {what} while a stage run or an export of this object is in progress")
+            yield self._native
+
     def _handle(self):
         """The native workspace; raises IoError once the workspace is closed."""
         if self._closed:
             raise IoError("Workspace: the workspace is closed")
         return self._native
 
-    def _writable_handle(self):
-        """The native workspace; raises IoError once it is closed or when it is read-only,
-        before anything is looked up."""
-        handle = self._handle()
+    def _require_writable(self):
+        """Raises IoError once the workspace is closed or when it is read-only, before the
+        arguments are validated; _mutation() checks closed again under _state."""
+        self._handle()
         if self._read_only:
             raise IoError("Workspace: the workspace is read-only")
-        return handle
 
     @property
     def layers(self) -> Tuple[Layer, ...]:
@@ -281,22 +295,27 @@ class Workspace:
     def declare_layer(self, name, *, parent=None) -> None:
         """Declares a semantic layer directly above parent, a semantic layer's name; None
         puts it directly above the pixel layer."""
-        handle = self._writable_handle()
+        self._require_writable()
         name = _name(name, "the layer name")
         if parent is not None:
             parent = _name(parent, "the parent name")
-        handle.declare_layer(name, parent)
+        with self._mutation("declare a layer") as handle:
+            handle.declare_layer(name, parent)
 
     def declare_primitive_layer(self, name) -> None:
         """Declares a primitive layer, outside the semantic hierarchy."""
-        handle = self._writable_handle()
-        handle.declare_primitive_layer(_name(name, "the layer name"))
+        self._require_writable()
+        name = _name(name, "the layer name")
+        with self._mutation("declare a layer") as handle:
+            handle.declare_primitive_layer(name)
 
     def drop_layer(self, name) -> None:
         """Discards every object of a primitive layer, keeping the layer. Objects derived
         from it stay; no stage becomes stale. Dropping a dropped layer does nothing."""
-        handle = self._writable_handle()
-        handle.drop_layer(_name(name, "the layer name"))
+        self._require_writable()
+        name = _name(name, "the layer name")
+        with self._mutation("drop a layer") as handle:
+            handle.drop_layer(name)
 
     @property
     def rasters(self) -> Tuple[Raster, ...]:
@@ -307,7 +326,7 @@ class Workspace:
     def declare_raster(self, name, dtype, *, planes=1) -> None:
         """Declares a raster of planes planes of dtype (anything numpy.dtype() accepts that
         is an 8- to 64-bit integer or a 16-, 32- or 64-bit float)."""
-        handle = self._writable_handle()
+        self._require_writable()
         name = _name(name, "the raster name")
         try:
             resolved = numpy.dtype(dtype)
@@ -322,7 +341,8 @@ class Workspace:
             raise TypeError(f"Workspace: planes must be an int, got {planes!r}")
         if not 1 <= planes <= _MAX_PLANES:
             raise InvalidArgumentError(f"Workspace: planes must be from 1 to {_MAX_PLANES}, got {planes}")
-        handle.declare_raster(name, resolved.name, int(planes))
+        with self._mutation("declare a raster") as handle:
+            handle.declare_raster(name, resolved.name, int(planes))
 
     @property
     def stages(self) -> Tuple[StageInfo, ...]:
@@ -341,15 +361,18 @@ class Workspace:
         the stored one and marks the stage and its dependents stale. An unknown layer or
         raster raises InvalidArgumentError naming it; a cycle or a stage depending on
         itself raises StageError."""
-        handle = self._writable_handle()
-        name = _declare(handle, definition)
-        return _info(_native._stage_info(handle, name))
+        self._require_writable()
+        with self._mutation("declare a stage") as handle:
+            row = _native._stage_info(handle, _declare(handle, definition))
+        return _info(row)
 
     def mark_stale(self, name, *, downstream=False) -> None:
         """Marks the stage and every stage its re-run would invalidate as stale; with
         downstream=True, only those other stages, not the stage itself."""
-        handle = self._writable_handle()
-        _native._mark_stale(handle, _name(name, "the stage name"), bool(downstream))
+        self._require_writable()
+        name = _name(name, "the stage name")
+        with self._mutation("mark a stage stale") as handle:
+            _native._mark_stale(handle, name, bool(downstream))
 
     def run_stage(self, name, *, progress: Optional[Callable[[str, float, int, int], None]] = None,
                   cancellation: Optional[Cancellation] = None) -> StageRunResult:
@@ -373,6 +396,8 @@ class Workspace:
         if self._read_only:
             raise InvalidArgumentError("Workspace: cannot run a stage in a read-only workspace")
         name = _name(name, "the stage name")
+        if progress is not None and not callable(progress):
+            raise TypeError(f"Workspace: progress must be callable or None, got {progress!r}")
         if cancellation is None:
             cancellation = Cancellation()
         elif not isinstance(cancellation, Cancellation):
@@ -440,6 +465,7 @@ class Workspace:
         handle = self._handle()
         query = _objects.query_of(query, filters)
         names = _objects.requested_names(handle, measurements)
+        _objects.check_frame_names(names)
         cursor = _objects._open_cursor(self, query)
         return _objects.dataframe(_objects.batches(self, cursor, 10000, names, False), names)
 
@@ -497,13 +523,17 @@ class Workspace:
             for spec in specs:
                 file = spec.file
                 path = os.path.join(out, file)
-                written, cancelled = run_interruptibly(
-                    lambda spec=spec, path=path: _native._export(
-                        handle, spec._spec, path, slide_id, progress, cancellation._source),
-                    cancellation)
-                if cancelled:
-                    raise CancelledError(f"Workspace: the {spec.kind.value} export was cancelled")
-                results.append(ExportResult(file, written))
+
+                def write(spec=spec, path=path):
+                    # Raised on the helper thread, so that Ctrl-C's KeyboardInterrupt chains
+                    # from it, as a stage run's does.
+                    written, cancelled = _native._export(
+                        handle, spec._spec, path, slide_id, progress, cancellation._source)
+                    if cancelled:
+                        raise CancelledError(f"Workspace: the {spec.kind.value} export was cancelled")
+                    return written
+
+                results.append(ExportResult(file, run_interruptibly(write, cancellation)))
             return tuple(results)
         finally:
             self._end_long_call()

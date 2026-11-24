@@ -122,7 +122,7 @@ class ObjectQuery:
             if isinstance(self.limit, bool) or not isinstance(self.limit, numbers.Integral):
                 raise TypeError(f"ObjectQuery: limit must be an int or None, got {self.limit!r}")
             if not 0 <= int(self.limit) <= _INT64_MAX:
-                raise InvalidArgumentError(f"ObjectQuery: limit must be at least 0, got {self.limit!r}")
+                raise InvalidArgumentError(f"ObjectQuery: limit must be from 0 to {_INT64_MAX}, got {self.limit!r}")
             put(self, "limit", int(self.limit))
 
     def __hash__(self):
@@ -325,6 +325,14 @@ def batches(ws, cursor, batch_size, names, geometry):
 _FRAME_COLUMNS = ("id", "layer", "stage", "x", "y", "width", "height", "label")
 
 
+def check_frame_names(names):
+    """Refuses a measurement named as one of the DataFrame's fixed columns; call before
+    opening the cursor."""
+    for name in names:
+        if name in _FRAME_COLUMNS:
+            raise InvalidArgumentError(f"Workspace: the measurement {name!r} has the name of a DataFrame column")
+
+
 def dataframe(stream, names):
     try:
         import pandas
@@ -349,8 +357,6 @@ def dataframe(stream, names):
         "label": pandas.Series(labels, dtype=object),
     }
     for name in names:
-        if name in columns:
-            raise InvalidArgumentError(f"Workspace: the measurement {name!r} has the name of a DataFrame column")
         columns[name] = numpy.concatenate(values[name]) if values[name] else numpy.empty(0, dtype=numpy.float64)
     return pandas.DataFrame(columns)
 

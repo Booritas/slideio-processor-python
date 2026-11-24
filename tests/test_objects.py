@@ -139,8 +139,11 @@ def test_bad_filters_refused(nuclei_workspace):
         ws.count(colour="red")
     with pytest.raises(InvalidArgumentError, match="^ObjectQuery: "):
         ObjectQuery(intersecting=(0, 0, 0, 10))
-    with pytest.raises(InvalidArgumentError, match="^ObjectQuery: "):
+    limit_range = "^ObjectQuery: limit must be from 0 to 9223372036854775807, got "
+    with pytest.raises(InvalidArgumentError, match=limit_range + "-1$"):
         ObjectQuery(limit=-1)
+    with pytest.raises(InvalidArgumentError, match=limit_range + "9223372036854775808$"):
+        ObjectQuery(limit=2**63)
     with pytest.raises(TypeError, match="^ObjectQuery: "):
         ObjectQuery(layer=3)
     with pytest.raises(InvalidArgumentError, match="^ObjectQuery: "):
@@ -171,6 +174,22 @@ def test_dataframe(nuclei_workspace):
     assert list(empty.columns) == ["id", "layer", "stage", "x", "y", "width", "height", "label", "area"]
     assert len(empty) == 0
 
+
+def test_dataframe_column_clash_refused_before_the_query(nuclei_workspace, monkeypatch):
+    """A measurement named as a fixed DataFrame column is refused before a cursor opens,
+    not after every batch has been streamed."""
+    pytest.importorskip("pandas")
+    from slideio_processor import objects
+
+    monkeypatch.setattr(objects, "measurement_names_of", lambda handle: ("area", "x"))
+
+    def no_cursor(*args):
+        raise AssertionError("a cursor was opened")
+
+    monkeypatch.setattr(objects, "_open_cursor", no_cursor)
+    clash = "^Workspace: the measurement 'x' has the name of a DataFrame column$"
+    with pytest.raises(InvalidArgumentError, match=clash):
+        nuclei_workspace.dataframe(layer="nuclei", measurements=["area", "x"])
 
 def test_summary(nuclei_workspace):
     ws = nuclei_workspace

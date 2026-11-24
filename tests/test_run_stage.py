@@ -361,3 +361,176 @@ def test_concurrent_second_close_is_a_no_op(blob_slide, tmp_path):
     assert ws.closed
     # The native close ran once: the lock is free again.
     Workspace.open(tmp_path / "ws").close()
+
+
+def test_mutations_refused_during_long_call(blob_slide, tmp_path):
+    """Decision 8: only queries run alongside a long call. Every declare, drop and
+    mark_stale of the same object is refused while a stage run is in progress, so a changed
+    definition cannot be stored under the running stage; after the run they succeed."""
+    started = threading.Event()
+    release = threading.Event()
+
+    class Blocking(Operation):
+        name = "test.mutations_refused_during_long_call"
+        version = "1"
+        output = Output.RASTER
+
+        def apply(self, tile, context):
+            started.set()
+            release.wait(60)
+            return _mean(tile)
+
+    in_progress = "^Workspace: cannot .* while a stage run or an export of this object is in progress$"
+    changed = StageDefinition("python", PipelineSpec().add(Blocking), writes_raster="other")
+    errors = []
+    ws = Workspace.create(tmp_path / "ws", blob_slide)
+    try:
+        _raster_stage(ws, Blocking)
+        ws.declare_raster("other", "float32")
+        ws.declare_primitive_layer("cells")
+
+        def run():
+            try:
+                ws.run_stage("python")
+            except BaseException as error:  # noqa: B036
+                errors.append(error)
+
+        t = threading.Thread(target=run)
+        t.start()
+        try:
+            assert started.wait(60)
+            with pytest.raises(InvalidArgumentError, match=in_progress):
+                ws.declare_stage(changed)
+            with pytest.raises(InvalidArgumentError, match=in_progress):
+                ws.declare_layer("nuclei")
+            with pytest.raises(InvalidArgumentError, match=in_progress):
+                ws.declare_primitive_layer("more")
+            with pytest.raises(InvalidArgumentError, match=in_progress):
+                ws.drop_layer("cells")
+            with pytest.raises(InvalidArgumentError, match=in_progress):
+                ws.declare_raster("third", "uint8")
+            with pytest.raises(InvalidArgumentError, match=in_progress):
+                ws.mark_stale("python")
+            # Queries run alongside.
+            assert ws.stage("python").status is StageStatus.RUNNING
+        finally:
+            release.set()
+            t.join(60)
+        assert not t.is_alive()
+        assert not errors
+        info = ws.stage("python")
+        assert info.status is StageStatus.COMPLETE and not info.stale
+        assert "other" not in info.record
+        # Once the run has finished, every mutation succeeds.
+        ws.mark_stale("python")
+        assert ws.stage("python").stale
+        assert ws.declare_stage(changed).stale
+        ws.declare_layer("nuclei")
+        ws.declare_primitive_layer("more")
+        ws.drop_layer("cells")
+        ws.declare_raster("third", "uint8")
+    finally:
+        release.set()
+        ws.close()
+
+
+def test_bad_progress_refused(blob_slide, tmp_path):
+    with _nuclei(tmp_path / "ws", blob_slide) as ws:
+        with pytest.raises(TypeError, match="^Workspace: progress must be callable or None"):
+            ws.run_stage("nuclei", progress=3)
+        assert ws.stage("nuclei").status is StageStatus.PENDING
+
+
+def test_second_ctrl_c_waits_for_the_run(blob_slide, tmp_path):
+    """A second Ctrl-C while the cancelled run is still stopping does not end run_stage
+    early: it returns (with KeyboardInterrupt) only once the native call has finished, and
+    close() is refused until then. Deterministic: a SIGINT handler reports each interrupt it
+    raises, and the run's operation stays blocked until the waiting loop re-asserts the
+    cancellation after the second interrupt."""
+    import signal
+
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    handled = [threading.Event(), threading.Event()]
+    waiting_again = threading.Event()
+    proceed = threading.Event()
+    seen = []
+    close_errors = []
+
+    def handler(signum, frame):
+        handled[min(len(seen), 1)].set()
+        seen.append(signum)
+        raise KeyboardInterrupt
+
+    class Recording(Cancellation):
+        def cancel(self):
+            super().cancel()
+            if handled[1].is_set():
+                waiting_again.set()
+                proceed.set()
+
+    class Blocking(Operation):
+        name = "test.second_ctrl_c_waits_for_the_run"
+        version = "1"
+        output = Output.RASTER
+
+        def apply(self, tile, context):
+            started.set()
+            release.wait(60)
+            finished.set()
+            return _mean(tile)
+
+    class Then(Operation):
+        name = "test.second_ctrl_c_waits_for_the_run_then"
+        version = "1"
+        output = Output.RASTER
+
+        def apply(self, tile, context):
+            return numpy.ascontiguousarray(tile.reshape(tile.shape[:2]), dtype=numpy.float32)
+
+    ws = Workspace.create(tmp_path / "ws", blob_slide)
+
+    def interrupter():
+        try:
+            if not started.wait(30):
+                return
+            _thread.interrupt_main()
+            if not handled[0].wait(30):
+                return
+            _thread.interrupt_main()
+            if not handled[1].wait(30):
+                return
+            # Either run_stage is back in its wait (fixed) or it has returned (broken).
+            if proceed.wait(30) and waiting_again.is_set():
+                try:
+                    ws.close()
+                except InvalidArgumentError as error:
+                    close_errors.append(error)
+        finally:
+            release.set()
+
+    previous = signal.signal(signal.SIGINT, handler)
+    try:
+        ws.declare_raster("grey", "float32")
+        ws.declare_stage(StageDefinition("python", PipelineSpec().add(Blocking).add(Then), writes_raster="grey"))
+        helper = threading.Thread(target=interrupter)
+        helper.start()
+        try:
+            with pytest.raises(KeyboardInterrupt) as info:
+                ws.run_stage("python", cancellation=Recording())
+            finished_at_return = finished.is_set()
+        finally:
+            proceed.set()
+            helper.join(60)
+        assert len(seen) == 2
+        assert finished_at_return, "run_stage returned while the native run was still going"
+        assert len(close_errors) == 1
+        assert "cannot close while a stage run" in str(close_errors[0])
+        assert not ws.closed
+        assert isinstance(info.value.__cause__, CancelledError)
+        assert ws.stage("python").status is StageStatus.FAILED
+    finally:
+        signal.signal(signal.SIGINT, previous)
+        release.set()
+        ws.close()
