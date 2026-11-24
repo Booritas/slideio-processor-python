@@ -20,4 +20,5 @@ PYBIND11_MODULE(slideio_processor_native, m) {
     bindRun(m);
     bindOperations(m);
     bindConfiguration(m);
+    bindWorkspace(m);
 }
