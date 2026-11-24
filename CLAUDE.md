@@ -108,8 +108,13 @@ the library's `writeExport`, the function `SlideRun`'s exports use), `src/progre
 - Long-call lock (decision 8): `run_stage` and `export` are the long calls, one per `Workspace`
   object at a time. `Workspace._state` guards `_closed` and `_running`; `_begin_long_call`
   re-checks closed under it, so `close()` and the start of a long call decide atomically, and
-  `close()` during a long call raises `InvalidArgumentError`. Long calls run through
-  `run_interruptibly` on a helper thread, so Ctrl-C cancels them. Queries run alongside.
+  `close()` during a long call raises `InvalidArgumentError`. Every declare, drop and
+  `mark_stale` runs its native call inside `_mutation()`, which holds `_state` and refuses
+  with `InvalidArgumentError` while a long call runs (validate arguments before entering it:
+  `_state` is not reentrant). Long calls run through `run_interruptibly` on a helper thread,
+  so Ctrl-C cancels them; after the first Ctrl-C it waits for the call to finish, swallowing
+  further Ctrl-Cs, so `_end_long_call` never runs under a live native call. Queries run
+  alongside.
 - A cursor keeps its native workspace alive; after `close()` its next fetch raises `IoError`.
 - Log sink (decision 6): `configure_logging(python=True)` installs `PythonLogSink`
   (`src/configuration.cpp`), which enters Python only through the exit gate
@@ -117,4 +122,6 @@ the library's `writeExport`, the function `SlideRun`'s exports use), `src/progre
   `closePython` has run at exit, it drops messages instead of taking the GIL.
 - Exports: `Workspace.export` makes the out directory, writes each spec to
   `os.path.join(out, spec.file)` and raises `CancelledError("Workspace: the <kind> export was
-  cancelled")` for a cancelled one (the library leaves no file). `slide_id` defaults to `""`.
+  cancelled")` for a cancelled one, on the helper thread so a Ctrl-C chains from it (the library
+  leaves no file of that export; earlier specs' files stay). `PythonProgress` enters Python
+  through the exit gate, as the log sink does. `slide_id` defaults to `""`.

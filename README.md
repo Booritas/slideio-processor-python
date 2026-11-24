@@ -162,11 +162,29 @@ with Workspace.create("workspace", slide.get_scene(0), scene=0) as ws:
   `read_only` and `closed`; every other member raises `IoError`, and so does the next fetch of
   a result iterator that outlived it.
 - **One long call at a time.** `run_stage` and `export` are the long calls: one runs per
-  `Workspace` object at a time, and a second one, or `close()`, raises `InvalidArgumentError`
-  meanwhile. Queries may run alongside from other threads. Ctrl-C cancels a long call and raises
-  `KeyboardInterrupt` once it has stopped; a `Cancellation` raises `CancelledError`. A
-  cancellation that arrives during a stage's last operation may let the stage complete (a
-  library limitation); a cancelled export leaves no file.
+  `Workspace` object at a time, and a second one, `close()`, or any declare, drop or
+  `mark_stale` of the object raises `InvalidArgumentError` meanwhile. Queries may run alongside
+  from other threads. Ctrl-C cancels a long call and raises `KeyboardInterrupt` once it has
+  stopped (a second Ctrl-C does not cut the wait short); a `Cancellation` raises
+  `CancelledError`. A cancellation that arrives during a stage's last operation may let the
+  stage complete (a library limitation); a cancelled export leaves no file of that export;
+  files of earlier specs in the same call stay.
+- **Configuration and logging.** A `Configuration` (its `None` fields keep the library
+  defaults) is passed to `Workspace.create`, `open`, `open_read_only` and `SlideRun`; logging is
+  set once per process with `configure_logging`. `log_file` and `log_level` in a
+  `Configuration` take effect only through `configure_logging`; a run or workspace given them
+  does not reconfigure logging.
+
+  ```python
+  from slideio_processor import (Configuration, LogLevel, PipelineFile, SlideRun, Workspace,
+                                 configure_logging)
+
+  configure_logging(LogLevel.INFO, python=True)   # library messages to logging "slideio_processor"
+  config = Configuration(worker_count=4, tile_size=(1024, 1024))
+  ws = Workspace.create("workspace", "slide.svs", configuration=config)
+  run = SlideRun(PipelineFile.load("pipeline.json"), "slide.svs", "run-workspace", "out",
+                 configuration=config)
+  ```
 - **Queries.** `count`, `objects` (records), `batches` (NumPy columns), `dataframe` and
   `summary` take an `ObjectQuery` or its fields as keywords. `at_least` and `at_most` name
   measurements without checking them: an unknown name matches nothing.
