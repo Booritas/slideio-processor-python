@@ -21,6 +21,14 @@ from .errors import (  # noqa: E402  (after the native module is loaded)
 from .operation import Operation, Output, TileContext, registered_operations  # noqa: E402
 from .pipeline_file import ExportKind, ExportSpec, PipelineFile  # noqa: E402
 from .run import Cancellation, ExportResult, SlideRun, SlideRunResult, StageResult  # noqa: E402
+from .stages import (  # noqa: E402
+    LayerRasterContent,
+    PipelineSpec,
+    RunBlocker,
+    StageDefinition,
+    StageInfo,
+    StageStatus,
+)
 from .workspace import Layer, LayerKind, Raster, Workspace  # noqa: E402
 
 __version__ = _build_info.VERSION
@@ -42,4 +50,5 @@ __all__ = [
     "Operation", "Output", "TileContext", "registered_operations",
     "Configuration", "LogLevel", "configure_logging",
     "Workspace", "Layer", "LayerKind", "Raster",
+    "PipelineSpec", "StageDefinition", "StageInfo", "StageStatus", "RunBlocker", "LayerRasterContent",
 ]

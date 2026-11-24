@@ -10,6 +10,7 @@ from ._loader import load_native
 from .configuration import Configuration
 from .errors import InvalidArgumentError, IoError
 from .pipeline_file import _path_string, _text
+from .stages import StageDefinition, StageInfo, _declare, _info
 
 _native = load_native()
 
@@ -110,7 +111,7 @@ class Workspace:
 
     Layers and rasters are named by str. Declaring one that exists with the same definition
     does nothing; with another definition it raises InvalidArgumentError. In a read-only
-    workspace every declare and drop raises IoError, whatever it names. A closed
+    workspace every declare, drop and mark_stale raises IoError, whatever it names. A closed
     workspace still answers path, slide_path, scene_index, read_only and closed; every other
     member raises IoError.
     """
@@ -277,3 +278,30 @@ class Workspace:
         if not 1 <= planes <= _MAX_PLANES:
             raise InvalidArgumentError(f"Workspace: planes must be from 1 to {_MAX_PLANES}, got {planes}")
         handle.declare_raster(name, resolved.name, int(planes))
+
+    @property
+    def stages(self) -> Tuple[StageInfo, ...]:
+        """The declared stages in the registry's order (ascending id)."""
+        handle = self._handle()
+        return tuple(_info(_native._stage_info(handle, name)) for name in _native._stage_names(handle))
+
+    def stage(self, name) -> StageInfo:
+        """The stage named name; InvalidArgumentError when there is none."""
+        handle = self._handle()
+        return _info(_native._stage_info(handle, _name(name, "the stage name")))
+
+    def declare_stage(self, definition: StageDefinition) -> StageInfo:
+        """Declares a stage, resolving its layer and raster names, and returns its state.
+        Declaring the same definition again changes nothing; a changed definition replaces
+        the stored one and marks the stage and its dependents stale. An unknown layer or
+        raster raises InvalidArgumentError naming it; a cycle or a stage depending on
+        itself raises StageError."""
+        handle = self._writable_handle()
+        name = _declare(handle, definition)
+        return _info(_native._stage_info(handle, name))
+
+    def mark_stale(self, name, *, downstream=False) -> None:
+        """Marks the stage and every stage its re-run would invalidate as stale; with
+        downstream=True, only those other stages, not the stage itself."""
+        handle = self._writable_handle()
+        _native._mark_stale(handle, _name(name, "the stage name"), bool(downstream))
