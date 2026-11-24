@@ -77,5 +77,7 @@ records), `src/python_operation.cpp` (factory and stand-in operations), `src/pyt
 - Decision 7: the cause is chained through a Python-side record list keyed by operation name
   (`_record_error`, `_take_errors`); `SlideRun.run` attaches the first record since its mark as
   `__cause__`. Concurrent runs of one operation in a process can cross-attach; documented.
-- Decision 9: the factory keeps its class as a strong reference never released; a stand-in
-  destroyed after the interpreter finalizes leaks its instance.
+- Decision 9: the factory keeps its class as a strong reference never released. Exit gate:
+  an atexit handler, `closePython` (`src/python_runtime.cpp`), closes entry to Python; once it
+  has run, stand-ins no longer enter Python and leak their instances. It waits, GIL released,
+  for threads inside Python to leave.

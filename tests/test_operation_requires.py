@@ -1,4 +1,4 @@
-﻿import json
+import json
 import os
 import sqlite3
 import subprocess
@@ -20,6 +20,7 @@ def _pipeline_text(module):
 
 def test_requires_imports_module(blob_slide, tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(MODULE_DIR))
+    monkeypatch.delitem(sys.modules, "sample_ops", raising=False)
     assert "sample_ops" not in sys.modules
     pipeline = PipelineFile.from_json(_pipeline_text("sample_ops"))
     SlideRun(pipeline, blob_slide, tmp_path / "ws", tmp_path / "out").run()
@@ -40,6 +41,21 @@ def test_requires_missing_module(blob_slide, tmp_path):
         run.run()
     assert isinstance(info.value.__cause__, ImportError)
     assert not (tmp_path / "ws").exists()
+
+
+def test_requires_import_error_of_any_kind_wrapped(blob_slide, tmp_path, monkeypatch):
+    module_dir = tmp_path / "badmod"
+    module_dir.mkdir()
+    (module_dir / "raising_ops_xyz.py").write_text("raise ValueError('bad module body')\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(module_dir))
+    monkeypatch.delitem(sys.modules, "raising_ops_xyz", raising=False)
+    pipeline = PipelineFile.from_json(_pipeline_text("raising_ops_xyz"))
+    run = SlideRun(pipeline, blob_slide, tmp_path / "ws", tmp_path / "out")
+    with pytest.raises(InvalidArgumentError, match="raising_ops_xyz") as info:
+        run.run()
+    assert isinstance(info.value.__cause__, ValueError)
+    assert not (tmp_path / "ws").exists()
+    sys.modules.pop("raising_ops_xyz", None)
 
 
 def _cli(tmp_path, blob_slide, module):

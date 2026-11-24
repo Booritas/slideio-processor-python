@@ -103,8 +103,9 @@ class SlideRun:
         naming the operation, with that exception as its __cause__.
 
         The pipeline file's `requires` modules are imported first, on the calling thread. A
-        module that fails to import raises InvalidArgumentError naming it, with the
-        ImportError as its __cause__, before the workspace is touched.
+        module whose import raises (ImportError or anything else) gives an
+        InvalidArgumentError naming it, with the original exception as its __cause__,
+        before the workspace is touched.
 
         One object runs once at a time: run() while another run() of the same object is
         in progress raises InvalidArgumentError.
@@ -115,9 +116,10 @@ class SlideRun:
             for module in self._requires:
                 try:
                     importlib.import_module(module)
-                except ImportError as error:
+                except Exception as error:
                     raise InvalidArgumentError(
-                        f"SlideRun: the required module {module!r} cannot be imported: {error}") from error
+                        f"SlideRun: the required module {module!r} cannot be imported: "
+                        f"{type(error).__name__}: {error}") from error
             mark = _operation._error_mark()
             try:
                 return self._run_locked(progress, cancellation)

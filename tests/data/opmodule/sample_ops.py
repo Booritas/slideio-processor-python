@@ -1,4 +1,4 @@
-﻿"""A module of Python operations for the `requires` tests: imported only by a pipeline file."""
+"""A module of Python operations for the `requires` tests: imported only by a pipeline file."""
 import slideio_processor as sp
 
 __version__ = "0.3"

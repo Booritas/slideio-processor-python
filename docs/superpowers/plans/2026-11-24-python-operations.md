@@ -42,13 +42,14 @@
    - `LABELS`: dtype `int32`, shape `(H, W)` or `(H, W, 1)`, where `H` and `W` are the halo rect's height and width.
    - `RASTER`: dtype `output_dtype`, shape `(H, W, output_planes)`, or `(H, W)` when `output_planes == 1`.
 7. **The cause is chained through a Python-side record.**
-   - When `__init__` or `apply` raises, the stand-in records `(operation name, exception)` in a process-wide list in `slideio_processor.operation`, under the GIL. It then throws a C++ exception whose `what()` is `"<ExceptionType>: <str(exception)>"`, and the library wraps that as a `TileError` naming the operation.
+   - When `__init__` or `apply` raises, the stand-in records `(operation name, exception)` in a process-wide list in `slideio_processor.operation`, under the GIL. It then throws a C++ exception whose `what()` is `"<ExceptionType>: <str(exception)>"`, and the library wraps that as a `StageError` naming the operation (the library's StageRunner wraps tile failures as `StageError`, which carries `operation_name` and the chained cause).
    - `SlideRun.run` sets `error.__cause__` to the first exception recorded for `error.operation_name` since that run started, then clears the run's records.
    - Two runs of the same operation at once in one process may attach the other run's exception. That is documented; the design runs one slide per process.
 8. **`max_concurrency` is per registered name, not per instance.** It is a counting semaphore waited on *without* the GIL. A GPU is shared by every stage that uses the operation.
 9. **Process exit.**
    - The catalog never removes a factory, and its static destructor runs after Python has finalized. The factory therefore holds its class as a strong reference that it never releases.
    - A stand-in that is destroyed while the interpreter is alive takes the GIL to drop its instance. When `Py_IsInitialized()` is false or the interpreter is finalizing, it leaks the instance instead.
+   - An atexit exit gate (`closePython`) closes the entry to Python: once it has run, stand-ins no longer enter Python and leak their instances. It waits, with the GIL released, for threads inside Python to leave.
 10. **`requires` is imported by `SlideRun.run`** on the calling thread, before the native run starts. A module that fails to import raises `InvalidArgumentError` naming the module, chained to the `ImportError`. The CLI adds nothing to `sys.path`; modules must be importable, for example installed or on `PYTHONPATH`.
 11. **Origin** (provenance) is `"<module>:<qualname>"`, plus `" <version>"` when the module, or failing that its top-level package, has a `__version__`. The library writes it to the stage record (Task 1).
 
@@ -106,7 +107,7 @@
 
 1. **The interpreter exits after an operation was registered and run.** Expect exit code 0: no crash from the catalog's static destructor or a late stand-in releasing Python objects. Tests: Task 2 `test_exit_after_registration_is_clean`, Task 3 `test_exit_after_run_is_clean`, both in a subprocess.
 2. **A notebook cell defining the operation is re-run.** Expect the new class to replace the old one, with no "already registered" error, and the next run to use the new class. Test: Task 2 `test_redefinition_replaces_class`.
-3. **`apply` returns the wrong array.** Examples: `int64` labels from `skimage.measure.label`, or a tile-sized array without the halo. Expect a `TileError` naming the operation and stating the expected and actual dtype or shape. Never a crash, a silent cast, or a misaligned raster. Tests: Task 3 `test_raster_wrong_shape_or_dtype_fails`, Task 4 `test_labels_must_be_int32`.
+3. **`apply` returns the wrong array.** Examples: `int64` labels from `skimage.measure.label`, or a tile-sized array without the halo. Expect a `StageError` naming the operation and stating the expected and actual dtype or shape. Never a crash, a silent cast, or a misaligned raster. Tests: Task 3 `test_raster_wrong_shape_or_dtype_fails`, Task 4 `test_labels_must_be_int32`.
 4. **Ctrl-C while a Python operation is in a long `apply`.** Expect `KeyboardInterrupt` in the caller, the run cancelled and no hang, even though worker threads keep taking the GIL. Test: Task 3 `test_keyboard_interrupt_during_python_apply`.
 5. **A pipeline file whose stage carries an old `version`, or none.** Expect `InvalidArgumentError` naming the operation and both versions, raised before the workspace directory is created. Test: Task 2 `test_version_mismatch_refused_before_run`.
 
@@ -227,7 +228,7 @@
     - `level_scale: float`
     - `pixel_size_um: float`: 0 when unknown
     - `cancelled: bool`: reads the run's token. After `apply` returns it is `True`, since the token is detached.
-  - Fixture `seam_slide(tmp_path) -> Path`: a 2200×400 RGB PNG, white `(255, 255, 255)`, with three dark `(20, 20, 20)` discs of radius 40 centred at `(300, 200)`, `(1024, 200)` and `(1700, 200)`. With the library's default 1024-pixel tiles it has three tiles, and the middle disc straddles the first seam.
+  - Fixture `seam_slide(tmp_path) -> Path`: a 2200×400 RGB image, white `(255, 255, 255)`, with three dark `(20, 20, 20)` discs of radius 40 centred at `(300, 200)`, `(1024, 200)` and `(1700, 200)`. It is a 1024-pixel tiled TIFF `seam.svs` (built with `tests/support/tiled_tiff.py`), with `seam.png` beside it as the pixel reference: a PNG opens as one tile and `SlideRun` does not expose the tile size. It has three tiles, and the middle disc straddles the first seam.
 
 - [ ] **Step 1: Write the failing tests** in `tests/test_operation_raster.py`. The raster operation `Grey` returns `tile.mean(axis=2, dtype=float32)`, has `halo = 16`, and writes raster `"grey"`, exported as `grey.ome.tif`.
   - `test_raster_matches_numpy`: read the exported TIFF with `slideio.open_slide(path, "OMETIFF")`, `get_scene(0).read_block()`. It equals the PNG's channel mean computed in NumPy, exactly, over the whole 2200×400. This proves the halo is cropped and aligned in every tile.
@@ -235,9 +236,9 @@
   - `test_init_once_per_stage`: `__init__` increments a class-level counter. After one run over three tiles, the counter is 1.
   - `test_parameters_reach_init`: `parameters = {"scale": 1.0}`, stage `scale = 2.0`. `__init__` receives `{"scale": 2.0}`, without `version`.
   - `test_max_concurrency_one`: `max_concurrency = 1`. `apply` tracks concurrent calls under a `threading.Lock` and sleeps 0.05 s. The maximum seen is 1.
-  - `test_apply_exception_chained`: `apply` raises `ValueError("boom")`. `SlideRun.run` raises `TileError` with `operation_name == "test.apply_exception_chained"`, `isinstance(e.__cause__, ValueError)` and `"boom" in str(e.__cause__)`. A second run of the same `SlideRun` with a fixed class carries no stale cause.
+  - `test_apply_exception_chained`: `apply` raises `ValueError("boom")`. `SlideRun.run` raises `StageError` with `operation_name == "test.apply_exception_chained"`, `isinstance(e.__cause__, ValueError)` and `"boom" in str(e.__cause__)`. A second run of the same `SlideRun` with a fixed class carries no stale cause.
   - `test_init_exception_chained`: the same, for `__init__` raising `RuntimeError`.
-  - `test_raster_wrong_shape_or_dtype_fails`: parametrised over a tile-sized array (no halo), a `float64` array, and a list. Each gives `TileError` whose message contains the operation name and both the expected and the actual shape or dtype.
+  - `test_raster_wrong_shape_or_dtype_fails`: parametrised over a tile-sized array (no halo), a `float64` array, and a list. Each gives `StageError` whose message contains the operation name and both the expected and the actual shape or dtype.
   - `test_nondeterministic_flag_recorded`: `deterministic = False`. After the run, the workspace store's stage record contains `"nondeterministicOperations"`. Read the stage records table with `sqlite3`; look up the table and column names in the library's `src/storage` schema.
   - `test_origin_recorded`: the stage record's `operationOrigins` maps the operation to `"<test module>:<qualname>"`.
   - `test_keyboard_interrupt_during_python_apply`: on its first call `apply` calls `_thread.interrupt_main()`, then sleeps 0.2 s. `SlideRun.run` raises `KeyboardInterrupt` within 10 s, and no `.partial` file remains in `out`.
@@ -264,9 +265,9 @@
   - Objects, measurements, ownership and truncation counting are the base's.
 
 - [ ] **Step 1: Write the failing tests.** The operation `Dark` returns `(tile.mean(axis=2) < 128).astype(numpy.int32)`, writes layer `"dark"`, and is exported as CSV `dark.csv`.
-  - `test_labels_objects_whole`: with `halo = 96` on `seam_slide`, the stage writes 3 objects, `truncated_objects == 0`, and `dark.csv` has 3 rows. Each row's `area` is within 2% of π·40². The middle disc is one object, not two.
+  - `test_labels_objects_whole`: with `halo = 96` on `seam_slide`, the stage writes 3 objects, `truncated_objects == 0`, and `dark.csv` has 3 rows. Each row's `area` is within 2% of π·40.5² (PIL draws the disc 81 px across). The middle disc is one object, not two.
   - `test_labels_small_halo_truncates`: with `halo = 8`, `truncated_objects >= 1` and fewer than 3 objects are written.
-  - `test_labels_must_be_int32`: returning `int64` gives `TileError` naming the operation, `int32` and `int64`.
+  - `test_labels_must_be_int32`: returning `int64` gives `StageError` naming the operation, `int32` and `int64`.
   - `test_labels_accepts_trailing_plane`: an `(H, W, 1)` `int32` return works like `(H, W)`.
   - `test_target_layer_parameter`: stage parameters `{"version": "1", "targetLayer": "dark"}` are accepted.
 - [ ] **Step 2: Rebuild and run; expect failures.**
