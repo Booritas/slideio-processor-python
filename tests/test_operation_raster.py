@@ -183,6 +183,7 @@ def test_max_concurrency_unlimited_runs_tiles_together(seam_slide, tmp_path):
     lock = threading.Lock()
     overlap = threading.Event()
     state = {"now": 0, "most": 0}
+    deadline = time.monotonic() + 30
 
     class Grey(Operation):
         name = "test.max_concurrency_unlimited_runs_tiles_together"
@@ -196,7 +197,7 @@ def test_max_concurrency_unlimited_runs_tiles_together(seam_slide, tmp_path):
                 if state["now"] >= 2:
                     overlap.set()
             # The first apply waits, without the GIL, for a second one to arrive.
-            overlap.wait(timeout=30)
+            overlap.wait(max(0, deadline - time.monotonic()))
             with lock:
                 state["now"] -= 1
             return _mean(tile)
@@ -205,7 +206,7 @@ def test_max_concurrency_unlimited_runs_tiles_together(seam_slide, tmp_path):
     assert state["most"] > 1
 
 
-def _no_records_left(name):
+def _no_records_left():
     # Read-only: a check that cleared the records would hide what a run left behind.
     return operation_module._peek_errors() == []
 
@@ -228,7 +229,7 @@ def test_apply_exception_chained(seam_slide, tmp_path):
     assert isinstance(info.value.__cause__, ValueError)
     assert "boom" in str(info.value.__cause__)
     assert "ValueError: boom" in str(info.value)
-    assert _no_records_left(name)
+    assert _no_records_left()
 
     class OtherBroken(Operation):
         name = "test.apply_exception_chained"
@@ -238,12 +239,16 @@ def test_apply_exception_chained(seam_slide, tmp_path):
         def apply(self, tile, context):
             raise KeyError("second")
 
-    # The first run's exception is not the cause of the second run's error.
+    # A stale record from before the run is not the cause either: the run's mark filters it.
+    operation_module._record_error(name, ValueError("stale"))
     with pytest.raises(StageError) as info:
         run.run()
     assert isinstance(info.value.__cause__, KeyError)
     assert "second" in str(info.value.__cause__)
-    assert _no_records_left(name)
+    # Only the stale record is left, and it is older than the run's mark.
+    assert [n for n, _ in operation_module._peek_errors()] == [name]
+    operation_module._take_errors(name, 0)
+    assert _no_records_left()
 
     class Fixed(Operation):
         name = "test.apply_exception_chained"
@@ -255,7 +260,7 @@ def test_apply_exception_chained(seam_slide, tmp_path):
 
     result = run.run()
     assert result.stages[0].ran
-    assert _no_records_left(name)
+    assert _no_records_left()
 
 
 def test_init_exception_chained(seam_slide, tmp_path):
@@ -280,7 +285,7 @@ def test_init_exception_chained(seam_slide, tmp_path):
     assert "no model" in str(info.value.__cause__)
     # A failed construction is not retried for the stage's other tiles.
     assert Broken.attempts == 1
-    assert _no_records_left(Broken.name)
+    assert _no_records_left()
 
 
 def test_unprintable_exception_is_reported(seam_slide, tmp_path):

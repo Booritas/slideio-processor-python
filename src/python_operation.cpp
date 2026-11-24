@@ -32,7 +32,6 @@
 
 namespace {
 
-namespace sp = slideio::processor;
 using namespace slideio_processor_python;
 
 enum class Kind { Bool, Int, Double, String, DoubleArray };
