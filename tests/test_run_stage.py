@@ -9,6 +9,7 @@ import pytest
 from slideio_processor import (
     Cancellation,
     CancelledError,
+    ExportSpec,
     InvalidArgumentError,
     IoError,
     LogLevel,
@@ -219,9 +220,12 @@ def test_concurrent_long_call_refused(blob_slide, tmp_path):
         t.start()
         try:
             assert started.wait(60)
-            with pytest.raises(InvalidArgumentError, match="^Workspace: .*in progress"):
+            with pytest.raises(InvalidArgumentError, match="^Workspace: .*stage run or an export.*in progress"):
                 ws.run_stage("python")
-            with pytest.raises(InvalidArgumentError, match="^Workspace: .*in progress"):
+            with pytest.raises(InvalidArgumentError, match="^Workspace: .*stage run or an export.*in progress"):
+                ws.export(ExportSpec.csv("n.csv", "nuclei"), tmp_path / "out")
+            assert not (tmp_path / "out").exists()
+            with pytest.raises(InvalidArgumentError, match="^Workspace: cannot close while a stage run or an export"):
                 ws.close()
             assert not ws.closed
             # Queries run alongside.

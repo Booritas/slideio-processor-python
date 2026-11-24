@@ -22,6 +22,8 @@ void bindWorkspace(py::module_& m);
 void bindStages(py::module_& m);
 /// Binds object queries of a _Workspace by name: _query, _Cursor, _count, _get, _measurement_names.
 void bindObjects(py::module_& m);
+/// Binds _export: one export of a _Workspace through the library's writeExport.
+void bindExports(py::module_& m);
 
 /// Sets the current Python error for a native exception that is not a pybind11 one, as the
 /// module's exception translator does: a ProcessorError by its code, anything else as an

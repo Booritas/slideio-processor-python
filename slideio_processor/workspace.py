@@ -3,6 +3,7 @@ import dataclasses
 import enum
 import os
 import threading
+from collections import abc
 from typing import Callable, Iterator, Optional, Sequence, Tuple
 
 import numpy
@@ -11,10 +12,10 @@ from . import objects as _objects
 from ._loader import load_native
 from ._runner import operation_causes, run_interruptibly
 from .configuration import Configuration
-from .errors import InvalidArgumentError, IoError
+from .errors import CancelledError, InvalidArgumentError, IoError
 from .objects import ObjectBatch, ObjectQuery, ObjectRecord, ResultSummary
-from .pipeline_file import _path_string, _text
-from .run import Cancellation
+from .pipeline_file import ExportSpec, _path_string, _text
+from .run import Cancellation, ExportResult
 from .stages import StageDefinition, StageInfo, _declare, _info
 
 _native = load_native()
@@ -132,9 +133,9 @@ class Workspace:
     workspace still answers path, slide_path, scene_index, read_only and closed; every other
     member raises IoError.
 
-    One long call (run_stage) of an object runs at a time: a second one, or close(), while
-    it is in progress raises InvalidArgumentError. Queries may run alongside it from other
-    threads.
+    One long call (run_stage or export) of an object runs at a time: a second one, or
+    close(), while it is in progress raises InvalidArgumentError. Queries may run alongside
+    it from other threads.
     """
 
     __slots__ = ("_native", "_closed", "_path", "_slide_path", "_scene_index", "_read_only", "_state", "_running")
@@ -221,13 +222,14 @@ class Workspace:
     def close(self) -> None:
         """Closes the store, releasing the writer lock, and releases the slide. A second
         call does nothing. When closing the store fails, IoError is raised and the
-        workspace is closed even so. While a stage run of this object is in progress,
-        InvalidArgumentError is raised and nothing is closed."""
+        workspace is closed even so. While a stage run or an export of this object is in
+        progress, InvalidArgumentError is raised and nothing is closed."""
         with self._state:
             if self._closed:
                 return  # closed, or being closed by another thread
             if self._running:
-                raise InvalidArgumentError("Workspace: cannot close while a stage run of this object is in progress")
+                raise InvalidArgumentError(
+                    "Workspace: cannot close while a stage run or an export of this object is in progress")
             self._closed = True
         self._native.close()
 
@@ -248,7 +250,7 @@ class Workspace:
             if self._closed:
                 raise IoError("Workspace: the workspace is closed")
             if self._running:
-                raise InvalidArgumentError("Workspace: a stage run of this object is already in progress")
+                raise InvalidArgumentError("Workspace: a stage run or an export of this object is already in progress")
             self._running = True
 
     def _end_long_call(self):
@@ -451,3 +453,57 @@ class Workspace:
         names = _objects.requested_names(handle, measurements)
         cursor = _objects._open_cursor(self, query)
         return _objects.summary(_objects.batches(self, cursor, 10000, names, False), names)
+
+    def export(self, specs, out, *, slide_id="", progress: Optional[Callable[[str, float, int, int], None]] = None,
+               cancellation: Optional[Cancellation] = None) -> Tuple[ExportResult, ...]:
+        """Writes each export of specs (an ExportSpec or a sequence of them), in order, to
+        os.path.join(out, spec.file), and returns what each wrote. out is a directory (str or
+        os.PathLike), made with its parents when missing. The files are those a SlideRun
+        with the same specs writes: each is written as "<file>.partial" and renamed when
+        complete. slide_id is written in the CSV and GeoJSON provenance in place of the
+        slide path; the default "" writes none.
+
+        A label mask holds each object's label value, 0 for an object with no label; the
+        built-in operations attach none.
+
+        progress and Ctrl-C behave as for run_stage. A cancelled export raises
+        CancelledError and leaves no file of that export; the exports before it stay. An
+        unknown layer or raster, or a raster no stage has written, raises the library's
+        InvalidArgumentError naming it. Allowed on a read-only workspace; one long call of
+        this object runs at a time, so export() during run_stage() (or another export())
+        raises InvalidArgumentError.
+        """
+        handle = self._handle()
+        if isinstance(specs, ExportSpec):
+            specs = (specs,)
+        elif isinstance(specs, (str, bytes)) or not isinstance(specs, abc.Sequence):
+            raise TypeError(f"Workspace: specs must be an ExportSpec or a sequence of them, got {specs!r}")
+        specs = tuple(specs)
+        for spec in specs:
+            if not isinstance(spec, ExportSpec):
+                raise TypeError(f"Workspace: specs must be an ExportSpec or a sequence of them, got {spec!r}")
+        out = _path(out, "the output directory")
+        slide_id = _name(slide_id, "the slide id")
+        if progress is not None and not callable(progress):
+            raise TypeError(f"Workspace: progress must be callable or None, got {progress!r}")
+        if cancellation is None:
+            cancellation = Cancellation()
+        elif not isinstance(cancellation, Cancellation):
+            raise TypeError(f"Workspace: cancellation must be a Cancellation or None, got {cancellation!r}")
+        self._begin_long_call()
+        try:
+            os.makedirs(out, exist_ok=True)
+            results = []
+            for spec in specs:
+                file = spec.file
+                path = os.path.join(out, file)
+                written, cancelled = run_interruptibly(
+                    lambda spec=spec, path=path: _native._export(
+                        handle, spec._spec, path, slide_id, progress, cancellation._source),
+                    cancellation)
+                if cancelled:
+                    raise CancelledError(f"Workspace: the {spec.kind.value} export was cancelled")
+                results.append(ExportResult(file, written))
+            return tuple(results)
+        finally:
+            self._end_long_call()

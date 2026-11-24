@@ -81,3 +81,40 @@ records), `src/python_operation.cpp` (factory and stand-in operations), `src/pyt
   an atexit handler, `closePython` (`src/python_runtime.cpp`), closes entry to Python; once it
   has run, stand-ins no longer enter Python and leak their instances. It waits, GIL released,
   for threads inside Python to leave.
+
+## Workspaces and results
+
+Code: `slideio_processor/workspace.py` (`Workspace`: create/open over a path or a
+`slideio.Scene`, layers, rasters, stages, `run_stage`, queries, `export`),
+`slideio_processor/configuration.py` (`Configuration`, `LogLevel`, `configure_logging`),
+`slideio_processor/stages.py` (`PipelineSpec`, `StageDefinition`, `StageInfo`),
+`slideio_processor/objects.py` (`ObjectQuery`, records, batches, DataFrames, summaries),
+`slideio_processor/_runner.py` (`run_interruptibly`, `operation_causes`, shared with
+`SlideRun`), `slideio_processor/_geometry.py`. Native: `src/configuration.cpp`,
+`src/workspace.cpp`, `src/stages.cpp`, `src/objects.cpp`, `src/exports.cpp` (`_export`, through
+the library's `writeExport`, the function `SlideRun`'s exports use), `src/progress.hpp/.cpp`
+(`PythonProgress`, `raiseKept`, shared by runs, stage runs and exports). Tests:
+`tests/test_configuration.py`, `test_logging.py`, `test_workspace.py`, `test_stages.py`,
+`test_run_stage.py`, `test_objects.py`, `test_scene_handle.py`, `test_workspace_export.py`;
+`tests/support/workspaces.py` and the `nuclei_workspace` fixture.
+
+- Names, not ids: every public call takes and returns layer, stage and raster names; the
+  native layer resolves them and an unknown name raises `InvalidArgumentError` naming it.
+- GIL rule: every native call that reaches the store, the workspace, a cursor, a stage run or an
+  export runs with the GIL released (`py::gil_scoped_release` or
+  `py::call_guard<py::gil_scoped_release>`); Python objects are converted before and after,
+  with the GIL held. Waiting on a library lock with the GIL held can deadlock against a worker
+  thread that logs through the Python sink.
+- Long-call lock (decision 8): `run_stage` and `export` are the long calls, one per `Workspace`
+  object at a time. `Workspace._state` guards `_closed` and `_running`; `_begin_long_call`
+  re-checks closed under it, so `close()` and the start of a long call decide atomically, and
+  `close()` during a long call raises `InvalidArgumentError`. Long calls run through
+  `run_interruptibly` on a helper thread, so Ctrl-C cancels them. Queries run alongside.
+- A cursor keeps its native workspace alive; after `close()` its next fetch raises `IoError`.
+- Log sink (decision 6): `configure_logging(python=True)` installs `PythonLogSink`
+  (`src/configuration.cpp`), which enters Python only through the exit gate
+  (`enterPython`/`leavePython`, `src/python_runtime.cpp`) and holds no Python object: once
+  `closePython` has run at exit, it drops messages instead of taking the GIL.
+- Exports: `Workspace.export` makes the out directory, writes each spec to
+  `os.path.join(out, spec.file)` and raises `CancelledError("Workspace: the <kind> export was
+  cancelled")` for a cancelled one (the library leaves no file). `slide_id` defaults to `""`.
