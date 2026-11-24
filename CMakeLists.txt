@@ -46,6 +46,8 @@ pybind11_add_module(slideio_processor_native
     src/module.cpp
     src/errors.cpp
     src/pipeline_file.cpp
+    src/python_operation.cpp
+    src/python_runtime.cpp
     src/slide_run.cpp)
 target_link_libraries(slideio_processor_native PRIVATE
     slideio-processor-engine

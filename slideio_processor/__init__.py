@@ -17,6 +17,7 @@ from .errors import (  # noqa: E402  (after the native module is loaded)
     TileError,
     UnsupportedDataTypeError,
 )
+from .operation import Operation, Output, TileContext, registered_operations  # noqa: E402
 from .pipeline_file import ExportKind, ExportSpec, PipelineFile  # noqa: E402
 from .run import Cancellation, ExportResult, SlideRun, SlideRunResult, StageResult  # noqa: E402
 
@@ -36,4 +37,5 @@ __all__ = [
     "IoError", "InternalError",
     "ExportKind", "ExportSpec", "PipelineFile",
     "Cancellation", "ExportResult", "SlideRun", "SlideRunResult", "StageResult",
+    "Operation", "Output", "TileContext", "registered_operations",
 ]
