@@ -1,6 +1,21 @@
+import json
+from pathlib import Path
+
 import pytest
 
-from slideio_processor import ExportKind, ExportSpec, InvalidArgumentError, PipelineFile
+from slideio_processor import (
+    ExportKind,
+    ExportSpec,
+    InvalidArgumentError,
+    IoError,
+    Operation,
+    Output,
+    PipelineFile,
+    PipelineSpec,
+    SlideRun,
+    StageDefinition,
+    Workspace,
+)
 
 
 def test_round_trip(three_stage_json):
@@ -68,3 +83,60 @@ def test_nul_text_message_has_repr():
 def test_nul_or_undecodable_text_is_refused(call):
     with pytest.raises(InvalidArgumentError):
         call()
+
+
+def _module_dir():
+    return Path(__file__).parent / "data" / "opmodule"
+
+
+def test_from_workspace(nuclei_workspace):
+    f = PipelineFile.from_workspace(nuclei_workspace)
+    assert f.stage_names == ["nuclei"]
+    assert f.layer_names == ["nuclei"]
+    assert f.raster_names == []
+    assert f.requires == []
+    assert f.exports == []
+
+
+def test_from_workspace_refuses_other_types():
+    with pytest.raises(TypeError, match="^PipelineFile: "):
+        PipelineFile.from_workspace(object())
+
+
+def test_from_workspace_closed_refused(nuclei_workspace):
+    nuclei_workspace.close()
+    with pytest.raises(IoError, match="closed"):
+        PipelineFile.from_workspace(nuclei_workspace)
+
+
+def test_from_workspace_requires_python_operation_modules(blob_slide, tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(_module_dir()))
+    import sample_ops
+
+    class Scripted(Operation):
+        __module__ = "__main__"
+        name = "test.from_workspace_main_module"
+        version = "1"
+        output = Output.RASTER
+
+        def apply(self, tile, context):
+            return tile.mean(axis=2, dtype="float32")
+
+    with Workspace.create(tmp_path / "ws", blob_slide) as ws:
+        ws.declare_raster("grey", "float32")
+        ws.declare_raster("scripted", "float32")
+        ws.declare_stage(StageDefinition("python", PipelineSpec().add(sample_ops.Grey), writes_raster="grey"))
+        ws.declare_stage(StageDefinition("script", PipelineSpec().add(Scripted), writes_raster="scripted"))
+        assert "operationOrigins" in json.loads(ws.stage("script").record)
+        f = PipelineFile.from_workspace(ws)
+    assert f.stage_names == ["python", "script"]
+    assert f.raster_names == ["grey", "scripted"]
+    assert f.requires == ["sample_ops"]
+
+
+def test_from_workspace_runs_with_slide_run(nuclei_workspace, blob_slide, tmp_path):
+    f = PipelineFile.from_workspace(nuclei_workspace)
+    r = SlideRun(f, blob_slide, tmp_path / "fresh_ws", tmp_path / "fresh_out").run()
+    assert [s.name for s in r.stages] == ["nuclei"]
+    assert r.stages[0].ran
+    assert r.stages[0].objects_written == 9

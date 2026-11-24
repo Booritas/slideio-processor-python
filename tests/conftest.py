@@ -55,3 +55,20 @@ def three_stage_json():
     """The C++ test's three-stage pipeline file: tissue, nuclei within tissue, and a prob raster."""
     with open(os.path.join(_tests_dir, "data", "three_stage.json"), encoding="utf-8") as f:
         return f.read()
+
+
+@pytest.fixture
+def nuclei_workspace(blob_slide, tmp_path):
+    """A writable workspace over blob_slide with layer "nuclei" and stage "nuclei" (see
+    support.workspaces.nuclei_definition), run once. Closed after the test."""
+    from slideio_processor import Workspace
+    from support.workspaces import nuclei_definition
+
+    ws = Workspace.create(tmp_path / "nuclei_ws", blob_slide)
+    try:
+        ws.declare_layer("nuclei")
+        ws.declare_stage(nuclei_definition())
+        ws.run_stage("nuclei")
+        yield ws
+    finally:
+        ws.close()

@@ -1,5 +1,5 @@
-"""Builds pipeline specs for the workspace and stage tests."""
-from slideio_processor import PipelineSpec
+"""Builds pipeline specs and stage definitions for the workspace and stage tests."""
+from slideio_processor import PipelineSpec, StageDefinition
 
 
 def nuclei_spec():
@@ -9,3 +9,8 @@ def nuclei_spec():
             .add("pixel.colour_convert", **{"from": "Rgb", "to": "Grey"})
             .add("pixel.threshold_fixed", value=128.0, direction="Below")
             .add("segment.connected_components"))
+
+
+def nuclei_definition():
+    """Stage "nuclei", writing layer "nuclei" with nuclei_spec()."""
+    return StageDefinition("nuclei", nuclei_spec(), writes_layers=("nuclei",))

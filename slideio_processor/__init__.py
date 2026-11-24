@@ -29,7 +29,7 @@ from .stages import (  # noqa: E402
     StageInfo,
     StageStatus,
 )
-from .workspace import Layer, LayerKind, Raster, Workspace  # noqa: E402
+from .workspace import Layer, LayerKind, Raster, StageRunResult, Workspace  # noqa: E402
 
 __version__ = _build_info.VERSION
 SLIDEIO_VERSION = _build_info.SLIDEIO_VERSION
@@ -49,6 +49,6 @@ __all__ = [
     "Cancellation", "ExportResult", "SlideRun", "SlideRunResult", "StageResult",
     "Operation", "Output", "TileContext", "registered_operations",
     "Configuration", "LogLevel", "configure_logging",
-    "Workspace", "Layer", "LayerKind", "Raster",
+    "Workspace", "Layer", "LayerKind", "Raster", "StageRunResult",
     "PipelineSpec", "StageDefinition", "StageInfo", "StageStatus", "RunBlocker", "LayerRasterContent",
 ]

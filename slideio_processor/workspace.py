@@ -2,14 +2,17 @@
 import dataclasses
 import enum
 import os
-from typing import Optional, Tuple
+import threading
+from typing import Callable, Optional, Tuple
 
 import numpy
 
 from ._loader import load_native
+from ._runner import operation_causes, run_interruptibly
 from .configuration import Configuration
 from .errors import InvalidArgumentError, IoError
 from .pipeline_file import _path_string, _text
+from .run import Cancellation
 from .stages import StageDefinition, StageInfo, _declare, _info
 
 _native = load_native()
@@ -51,6 +54,18 @@ class Raster:
     dtype: numpy.dtype
     planes: int
     populated: bool
+
+
+@dataclasses.dataclass(frozen=True)
+class StageRunResult:
+    """What one run_stage() did. rerun tells whether it replaced an earlier run (the stage
+    was not Pending). truncated_objects counts dropped tile views, not distinct objects."""
+
+    name: str
+    rerun: bool
+    objects_written: int
+    edges_asserted: int
+    truncated_objects: int
 
 
 def _name(value, what="the name"):
@@ -114,9 +129,13 @@ class Workspace:
     workspace every declare, drop and mark_stale raises IoError, whatever it names. A closed
     workspace still answers path, slide_path, scene_index, read_only and closed; every other
     member raises IoError.
+
+    One long call (run_stage) of an object runs at a time: a second one, or close(), while
+    it is in progress raises InvalidArgumentError. Queries may run alongside it from other
+    threads.
     """
 
-    __slots__ = ("_native", "_closed", "_path", "_slide_path", "_scene_index", "_read_only")
+    __slots__ = ("_native", "_closed", "_path", "_slide_path", "_scene_index", "_read_only", "_long_call")
 
     def __init__(self, native):
         """Not for direct use: call create(), open() or open_read_only()."""
@@ -126,6 +145,7 @@ class Workspace:
         self._slide_path = native.slide_path()
         self._scene_index = native.scene_index()
         self._read_only = native.is_read_only()
+        self._long_call = threading.Lock()
 
     @classmethod
     def create(cls, path, slide, *, scene=None, configuration=None) -> "Workspace":
@@ -196,11 +216,17 @@ class Workspace:
     def close(self) -> None:
         """Closes the store, releasing the writer lock, and releases the slide. A second
         call does nothing. When closing the store fails, IoError is raised and the
-        workspace is closed even so."""
+        workspace is closed even so. While a stage run of this object is in progress,
+        InvalidArgumentError is raised and nothing is closed."""
         if self._closed:
             return
-        self._closed = True
-        self._native.close()
+        if not self._long_call.acquire(blocking=False):
+            raise InvalidArgumentError("Workspace: cannot close while a stage run of this object is in progress")
+        try:
+            self._closed = True
+            self._native.close()
+        finally:
+            self._long_call.release()
 
     def __enter__(self) -> "Workspace":
         return self
@@ -305,3 +331,40 @@ class Workspace:
         downstream=True, only those other stages, not the stage itself."""
         handle = self._writable_handle()
         _native._mark_stale(handle, _name(name, "the stage name"), bool(downstream))
+
+    def run_stage(self, name, *, progress: Optional[Callable[[str, float, int, int], None]] = None,
+                  cancellation: Optional[Cancellation] = None) -> StageRunResult:
+        """Runs the stage named name to completion, re-running it when it ran before, and
+        returns what it wrote. Its dependencies must be complete and current: the library
+        refuses the run otherwise, with a StageError naming the dependency.
+
+        progress(name, fraction, completed, total) is called from worker threads, as for
+        SlideRun.run: when it raises, the run is cancelled and its exception is raised,
+        with the CancelledError as its __context__. Ctrl-C cancels the run and raises
+        KeyboardInterrupt once the run has stopped; a cancelled run raises CancelledError
+        and leaves the stage Failed. The library looks at the cancellation before each tile
+        and before each operation of a tile, so one that arrives while the last operation
+        of the last tiles runs is not seen, and the stage completes. When a Python operation's __init__ or apply
+        raises, the StageError names the operation and has that exception as its __cause__.
+
+        A read-only workspace refuses with InvalidArgumentError, as does a second
+        run_stage() of this object while one is in progress.
+        """
+        handle = self._handle()
+        if self._read_only:
+            raise InvalidArgumentError("Workspace: cannot run a stage in a read-only workspace")
+        name = _name(name, "the stage name")
+        if cancellation is None:
+            cancellation = Cancellation()
+        elif not isinstance(cancellation, Cancellation):
+            raise TypeError(f"Workspace: cancellation must be a Cancellation or None, got {cancellation!r}")
+        if not self._long_call.acquire(blocking=False):
+            raise InvalidArgumentError("Workspace: a stage run of this object is already in progress")
+        try:
+            # close() is refused while the lock is held, so handle stays open throughout.
+            with operation_causes():
+                row = run_interruptibly(
+                    lambda: _native._run_stage(handle, name, progress, cancellation._source), cancellation)
+            return StageRunResult(*row)
+        finally:
+            self._long_call.release()

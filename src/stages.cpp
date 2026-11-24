@@ -2,9 +2,11 @@
 // of a _Workspace by name. Every call that reaches the workspace runs with the GIL released;
 // the Python arguments are converted before and the answers built after.
 #include "bindings.hpp"
+#include "progress.hpp"
 
 #include <pybind11/stl.h>
 
+#include <slideio/processor/core/control.hpp>
 #include <slideio/processor/core/error.hpp>
 #include <slideio/processor/core/flow.hpp>
 #include <slideio/processor/core/ids.hpp>
@@ -15,9 +17,12 @@
 #include <slideio/processor/storage/types.hpp>
 #include <slideio/processor/workspace/stage_definition.hpp>
 #include <slideio/processor/workspace/stage_registry.hpp>
+#include <slideio/processor/workspace/stage_runner.hpp>
 #include <slideio/processor/workspace/workspace.hpp>
 
 #include <cstdint>
+#include <exception>
+#include <memory>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -162,6 +167,50 @@ void markStale(sp::Workspace& workspace, const std::string& name, bool downstrea
     }
 }
 
+struct StageRunRow {
+    std::string name;
+    bool rerun = false;
+    int64_t objectsWritten = 0;
+    int64_t edgesAsserted = 0;
+    int64_t truncatedObjects = 0;
+};
+
+// Runs a stage with the GIL released for the whole library run (the name lookup and the
+// runner's construction included: both read the workspace). Returns (name, rerun,
+// objects_written, edges_asserted, truncated_objects).
+py::tuple runStage(sp::Workspace& workspace, const std::string& name, const py::object& progress,
+                   sp::CancellationSource& source) {
+    std::unique_ptr<PythonProgress> observer;
+    if (!progress.is_none()) observer = std::make_unique<PythonProgress>(progress, source);
+
+    StageRunRow row;
+    std::exception_ptr failure;
+    {
+        py::gil_scoped_release release;
+        try {
+            sp::StageRegistry& stages = workspace.stages();
+            const sp::StageId id = stageOf(stages, name);
+            row.name = stages.name(id);
+            sp::StageRunner runner(workspace, id);
+            runner.progress(observer.get()).cancellation(source.token());
+            runner.run();
+            row.rerun = runner.isRerun();
+            row.objectsWritten = runner.objectsWritten();
+            row.edgesAsserted = runner.edgesAsserted();
+            row.truncatedObjects = runner.truncatedObjects();
+        } catch (...) {
+            failure = std::current_exception();
+        }
+    }
+
+    if (observer) {
+        const py::object kept = observer->kept();
+        if (kept) raiseKept(kept, failure);
+    }
+    if (failure) std::rethrow_exception(failure);
+    return py::make_tuple(row.name, row.rerun, row.objectsWritten, row.edgesAsserted, row.truncatedObjects);
+}
+
 } // namespace
 
 void bindStages(py::module_& m) {
@@ -216,4 +265,8 @@ void bindStages(py::module_& m) {
         py::arg("workspace"), py::arg("name"));
 
     m.def("_mark_stale", &markStale, py::arg("workspace"), py::arg("name"), py::arg("downstream"), Release());
+
+    // Releases the GIL itself, around the library run only.
+    m.def("_run_stage", &runStage, py::arg("workspace"), py::arg("name"), py::arg("progress"),
+          py::arg("cancellation"));
 }

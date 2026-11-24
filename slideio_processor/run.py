@@ -4,10 +4,10 @@ import importlib
 import threading
 from typing import Callable, Optional, Tuple
 
-from . import operation as _operation
 from ._loader import load_native
+from ._runner import operation_causes, run_interruptibly
 from .configuration import Configuration
-from .errors import InvalidArgumentError, ProcessorError
+from .errors import InvalidArgumentError
 from .pipeline_file import _path_string, _text
 
 _INT32_MIN = -(2**31)
@@ -126,59 +126,11 @@ class SlideRun:
                     raise InvalidArgumentError(
                         f"SlideRun: the required module {module!r} cannot be imported: "
                         f"{type(error).__name__}: {error}") from error
-            mark = _operation._error_mark()
-            try:
-                return self._run_locked(progress, cancellation)
-            except ProcessorError as error:
-                # A Python operation's own exception becomes the cause (decision 7).
-                if error.operation_name is not None:
-                    causes = _operation._take_errors(error.operation_name, mark)
-                    if causes:
-                        error.__cause__ = causes[0]
-                raise
-            finally:
-                # _run_locked returns or raises only once the native run has finished.
-                _operation._take_errors(None, mark)
+            if cancellation is None:
+                cancellation = Cancellation()
+            native = self._run
+            with operation_causes():
+                stages, exports = run_interruptibly(lambda: native.run(progress, cancellation._source), cancellation)
+            return SlideRunResult(tuple(StageResult(*s) for s in stages), tuple(ExportResult(*e) for e in exports))
         finally:
             self._lock.release()
-
-    def _run_locked(self, progress, cancellation):
-        if cancellation is None:
-            cancellation = Cancellation()
-        outcome = {}
-        done = threading.Lock()
-        done.acquire()
-
-        def target():
-            try:
-                outcome["result"] = self._run.run(progress, cancellation._source)
-            except BaseException as error:  # noqa: B036  (handed to the calling thread)
-                outcome["error"] = error
-            finally:
-                done.release()
-
-        # The run happens on its own thread so that this one stays in an interruptible
-        # wait: Ctrl-C reaches Python here and cancels the run. The wait is on a plain
-        # lock, not Thread.join(timeout): when Ctrl-C interrupts that join, CPython before
-        # 3.13 marks the still-running thread as stopped, and a later join() returns at once.
-        t = threading.Thread(target=target, name="slideio-processor-run", daemon=True)
-        t.start()
-        try:
-            while not done.acquire(timeout=0.1):
-                pass
-        except KeyboardInterrupt:
-            cancellation.cancel()
-            t.join()
-            raise KeyboardInterrupt from outcome.get("error")
-        t.join()
-        if "error" in outcome:
-            error = outcome.pop("error")
-            # Raising here chains implicitly to any exception the caller is handling and
-            # would replace the context the run set (the CancelledError); put it back.
-            context = error.__context__
-            try:
-                raise error
-            finally:
-                error.__context__ = context
-        stages, exports = outcome["result"]
-        return SlideRunResult(tuple(StageResult(*s) for s in stages), tuple(ExportResult(*e) for e in exports))

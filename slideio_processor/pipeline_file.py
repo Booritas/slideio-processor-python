@@ -1,5 +1,6 @@
 """PipelineFile and ExportSpec: the JSON file that describes a whole slide run."""
 import enum
+import json
 import os
 
 from ._loader import load_native
@@ -133,6 +134,29 @@ class PipelineFile:
     def load(cls, path):
         """Reads a file from a JSON file on disk; path is a str or os.PathLike."""
         return cls._wrap(_native._PipelineFile.load(_path_string(path)))
+
+    @classmethod
+    def from_workspace(cls, workspace) -> "PipelineFile":
+        """Takes the layers, rasters and stages of an open Workspace (it is only read), to
+        run them on other slides with SlideRun. Exports are not taken; add them.
+
+        The module of every Python operation the stages use is added to requires, read
+        from each stage record's "operationOrigins", so that a run imports it first. An
+        operation whose module is __main__ (defined in a notebook or a script) adds
+        nothing: no other process can import it, so move it to a module before running
+        the file elsewhere.
+        """
+        from .workspace import Workspace  # workspace imports this module
+
+        if not isinstance(workspace, Workspace):
+            raise TypeError(f"PipelineFile: the workspace must be a Workspace, got {workspace!r}")
+        f = cls._wrap(_native._PipelineFile.from_workspace(workspace._handle()))
+        for stage in json.loads(f.to_json())["stages"]:
+            for origin in stage.get("operationOrigins", {}).values():
+                module = origin.split(":", 1)[0]
+                if module and module != "__main__":
+                    f.require(module)
+        return f
 
     def to_json(self):
         """The JSON form; from_json() of it gives an equal file."""
