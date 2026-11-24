@@ -3,14 +3,16 @@ import dataclasses
 import enum
 import os
 import threading
-from typing import Callable, Optional, Tuple
+from typing import Callable, Iterator, Optional, Sequence, Tuple
 
 import numpy
 
+from . import objects as _objects
 from ._loader import load_native
 from ._runner import operation_causes, run_interruptibly
 from .configuration import Configuration
 from .errors import InvalidArgumentError, IoError
+from .objects import ObjectBatch, ObjectQuery, ObjectRecord, ResultSummary
 from .pipeline_file import _path_string, _text
 from .run import Cancellation
 from .stages import StageDefinition, StageInfo, _declare, _info
@@ -384,3 +386,68 @@ class Workspace:
             return StageRunResult(*row)
         finally:
             self._end_long_call()
+
+    @property
+    def measurement_names(self) -> Tuple[str, ...]:
+        """Every measurement name the store holds, in ascending byte order."""
+        return _objects.measurement_names_of(self._handle())
+
+    def count(self, query: Optional[ObjectQuery] = None, **filters) -> int:
+        """The number of objects a query selects: an ObjectQuery, or its fields as keyword
+        filters (not both)."""
+        handle = self._handle()
+        return _objects.count(handle, _objects.query_of(query, filters))
+
+    def object(self, object_id: str) -> Optional[ObjectRecord]:
+        """The object with this id ("<layer>:<x>:<y>"), when it exists and its stage is
+        complete; else None. A malformed id raises InvalidArgumentError."""
+        return _objects.record(self._handle(), object_id)
+
+    def objects(self, query: Optional[ObjectQuery] = None, **filters) -> Iterator[ObjectRecord]:
+        """The objects a query selects, as ObjectRecord, fetched 1024 at a time from one
+        snapshot of the store taken by this call. The iterator keeps the workspace alive;
+        once the workspace is closed, its next item raises IoError."""
+        self._handle()
+        cursor = _objects._open_cursor(self, _objects.query_of(query, filters))
+        return _objects.records(self, cursor)
+
+    def batches(self, query: Optional[ObjectQuery] = None, *, batch_size: int = 10000,
+                measurements: Optional[Sequence[str]] = None, geometry: bool = False,
+                **filters) -> Iterator[ObjectBatch]:
+        """The objects a query selects, as ObjectBatch columns of up to batch_size objects,
+        from one snapshot of the store taken by this call. measurements names the
+        measurement columns (None: every name in measurement_names); geometry=True adds
+        each object's rings. The iterator keeps the workspace alive; once the workspace is
+        closed, its next item raises IoError."""
+        handle = self._handle()
+        query = _objects.query_of(query, filters)
+        size = _objects.batch_size_of(batch_size)
+        names = _objects.requested_names(handle, measurements)
+        cursor = _objects._open_cursor(self, query)
+        return _objects.batches(self, cursor, size, names, bool(geometry))
+
+    def dataframe(self, query: Optional[ObjectQuery] = None, *, measurements: Optional[Sequence[str]] = None,
+                  **filters) -> "pandas.DataFrame":  # noqa: F821
+        """The objects a query selects as a pandas DataFrame: columns id, layer, stage, x,
+        y, width, height, label, then one per measurement (None: every name in
+        measurement_names), NaN where an object lacks it. Needs pandas."""
+        try:
+            import pandas  # noqa: F401
+        except ImportError:
+            raise ImportError("Workspace.dataframe needs pandas: pip install slideio-processor[pandas]") from None
+        handle = self._handle()
+        query = _objects.query_of(query, filters)
+        names = _objects.requested_names(handle, measurements)
+        cursor = _objects._open_cursor(self, query)
+        return _objects.dataframe(_objects.batches(self, cursor, 10000, names, False), names)
+
+    def summary(self, query: Optional[ObjectQuery] = None, *, measurements: Optional[Sequence[str]] = None,
+                **filters) -> ResultSummary:
+        """The number of objects a query selects and, per measurement (None: every name in
+        measurement_names), the count, mean, population standard deviation, minimum and
+        maximum of its values, streamed over batches."""
+        handle = self._handle()
+        query = _objects.query_of(query, filters)
+        names = _objects.requested_names(handle, measurements)
+        cursor = _objects._open_cursor(self, query)
+        return _objects.summary(_objects.batches(self, cursor, 10000, names, False), names)

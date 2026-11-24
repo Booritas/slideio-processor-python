@@ -18,6 +18,14 @@ from .errors import (  # noqa: E402  (after the native module is loaded)
     TileError,
     UnsupportedDataTypeError,
 )
+from .objects import (  # noqa: E402
+    MeasurementSummary,
+    ObjectBatch,
+    ObjectQuery,
+    ObjectRecord,
+    ResultSummary,
+    SpatialPredicate,
+)
 from .operation import Operation, Output, TileContext, registered_operations  # noqa: E402
 from .pipeline_file import ExportKind, ExportSpec, PipelineFile  # noqa: E402
 from .run import Cancellation, ExportResult, SlideRun, SlideRunResult, StageResult  # noqa: E402
@@ -51,4 +59,5 @@ __all__ = [
     "Configuration", "LogLevel", "configure_logging",
     "Workspace", "Layer", "LayerKind", "Raster", "StageRunResult",
     "PipelineSpec", "StageDefinition", "StageInfo", "StageStatus", "RunBlocker", "LayerRasterContent",
+    "ObjectQuery", "SpatialPredicate", "ObjectRecord", "ObjectBatch", "MeasurementSummary", "ResultSummary",
 ]

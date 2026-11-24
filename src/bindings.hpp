@@ -20,6 +20,8 @@ void bindConfiguration(py::module_& m);
 void bindWorkspace(py::module_& m);
 /// Binds PipelineSpec as _PipelineSpec and the stage registry of a _Workspace, by name.
 void bindStages(py::module_& m);
+/// Binds object queries of a _Workspace by name: _query, _Cursor, _count, _get, _measurement_names.
+void bindObjects(py::module_& m);
 
 /// Sets the current Python error for a native exception that is not a pybind11 one, as the
 /// module's exception translator does: a ProcessorError by its code, anything else as an

@@ -46,6 +46,7 @@ pybind11_add_module(slideio_processor_native
     src/module.cpp
     src/configuration.cpp
     src/errors.cpp
+    src/objects.cpp
     src/pipeline_file.cpp
     src/progress.cpp
     src/python_operation.cpp

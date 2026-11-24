@@ -89,7 +89,7 @@ jobs:
           # Switch to `pip install slideio==$pin` from PyPI once that version is published there.
           python -m pip install --no-cache-dir "https://raw.githubusercontent.com/Booritas/slideio-dist/$pin/$pin/Windows/slideio-$pin-cp312-cp312-win_amd64.whl"
           python -m pip install --no-deps dist/slideio_processor-*.whl
-          python -m pip install pytest pillow
+          python -m pip install pytest pillow pandas
 
       - name: Test from outside the checkout
         run: |
@@ -136,7 +136,7 @@ jobs:
               # Switch to `pip install slideio==$pin` from PyPI once that version is published there.
               python -m pip install --no-cache-dir "https://raw.githubusercontent.com/Booritas/slideio-dist/$pin/$pin/Linux/slideio-$pin-cp312-cp312-manylinux_2_28_x86_64.whl"
               python -m pip install --no-deps dist/slideio_processor-*.whl
-              python -m pip install pytest pillow
+              python -m pip install pytest pillow pandas
               mkdir -p /tmp/pytest-run
               (cd /tmp/pytest-run && python -m pytest /src/tests -v)
               python scripts/check_pins.py --online
@@ -205,7 +205,7 @@ jobs:
           # Switch to `pip install slideio==$pin` from PyPI once that version is published there.
           python -m pip install --no-cache-dir "https://raw.githubusercontent.com/Booritas/slideio-dist/$pin/$pin/MacOS/arm/slideio-$pin-cp312-cp312-macosx_12_0_arm64.whl"
           python -m pip install --no-deps dist/slideio_processor-*.whl
-          python -m pip install pytest pillow
+          python -m pip install pytest pillow pandas
 
       - name: Test from outside the checkout
         run: |
