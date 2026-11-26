@@ -49,10 +49,13 @@ pipeline file for `slideio-processor run`; `--overlay` (with Pillow) draws the r
   fluorescence (any channel count) slides; `--mode` picks one, by default from the channel
   count, so a 3-channel fluorescence slide needs `--mode fluorescence`.
   `python tissue_detection.py slide.svs --workspace ws --out out --overlay`
-- [`nucleus_segmentation.py`](examples/nucleus_segmentation.py): nuclei of an H&E slide at
-  full resolution, restricted to the tissue, from built-in operations only (stain
-  deconvolution, threshold, hole filling, opening, distance transform, watershed). Try it on a
-  region first: `python nucleus_segmentation.py slide.svs --workspace ws --out out
+- [`nucleus_segmentation.py`](examples/nucleus_segmentation.py): nuclei of an H&E or a
+  fluorescence slide at full resolution, restricted to the tissue, from built-in operations
+  only (stain deconvolution for H&E or the nuclear channel, DAPI or Hoechst, for fluorescence;
+  threshold, hole filling, opening, distance transform, watershed). `--mode` picks one, by
+  default from the channel count, as in `tissue_detection.py`; `--nuclear-channel` names the
+  nuclear channel when it is not called DAPI or Hoechst. Try it on a region first:
+  `python nucleus_segmentation.py slide.svs --workspace ws --out out
   --roi 2200,4500,1000,1000 --overlay`
 
 Each script's docstring explains its parameters; `--help` lists them.

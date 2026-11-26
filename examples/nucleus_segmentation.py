@@ -1,12 +1,19 @@
-"""Nucleus segmentation on an H&E whole-slide image with slideio-processor.
+"""Nucleus segmentation on an H&E or fluorescence whole-slide image with slideio-processor.
 
 Runs two stages in one workspace, both from the library's built-in operations:
 
   tissue   segment.tissue_detect at a coarse level, as in tissue_detection.py
   nuclei   at full resolution, restricted to the tissue:
+           brightfield (H&E):
              pixel.stain_deconvolution   hematoxylin and eosin amounts (Ruifrok and Johnston)
              pixel.gaussian_blur         light smoothing
              pixel.threshold_fixed       hematoxylin above --hematoxylin-threshold is nucleus
+           fluorescence (the nuclear channel alone, DAPI or Hoechst):
+             pixel.gaussian_blur         light smoothing
+             pixel.threshold_adaptive    brighter than the mean of its neighbourhood by
+                                         --nuclear-offset (pixel.threshold_fixed with
+                                         --nuclear-threshold)
+           then, either way:
              pixel.fill_holes            pale nuclear centres filled
              pixel.morph_open            specks, thin lines and spurs removed
              pixel.distance_transform    a peak inside each nucleus, a dip where two touch
@@ -36,6 +43,18 @@ spacing covers the largest nucleus. A stained area larger than --max-nucleus-siz
 not a clump of nuclei (a fold, a dark artefact) still fails the run, and the message names a
 pixel in it: look at it, then exclude it with --roi or raise --max-nucleus-size-um.
 
+--mode picks brightfield or fluorescence, by default from the channel count as in
+tissue_detection.py: 3 channels are brightfield, any other count fluorescence (a 3-channel
+fluorescence slide needs --mode fluorescence). In fluorescence mode the nuclei come from one
+channel, --nuclear-channel (an index or a channel name; by default the channel named DAPI or
+Hoechst). A pixel is nucleus when it is brighter than the mean of the window around it,
+as wide as the largest nucleus, by --nuclear-offset (by default 2% of the channel type's
+range: 5 for 8-bit, 1311 for 16-bit; other types need it given). A local cut-off keeps
+packed nuclei apart: where cells crowd, the space between nuclei is often brighter than the
+nuclei of sparse tissue, so one cut-off for the whole slide fuses them into regions too large
+to split. A fixed cut-off, --nuclear-threshold in the scene's pixel units, replaces it for
+slides with even staining.
+
 The hematoxylin threshold is fixed, not computed per slide: Otsu over a whole slide can drop
 low on tissue with diffuse stain (smooth muscle, for one) and merge it into one region. Check
 it on an overlay of a few regions per staining batch; --hematoxylin-threshold changes it.
@@ -48,6 +67,8 @@ A full-resolution run over a whole 40x slide reads every pixel once and takes mi
 Example:
     python nucleus_segmentation.py slide.svs --workspace ws --out out \\
         --roi 2200,4500,1000,1000 --overlay
+    python nucleus_segmentation.py fluorescence.qptiff --workspace ws --out out \\
+        --roi 6000,6000,1000,1000 --overlay
 
 Slide paths and the slide id end up in logs and export files; keep them in storage covered
 by the deployment's HIPAA Security Rule and GDPR controls, and choose a --slide-id that is
@@ -71,6 +92,9 @@ _DRIVERS = [
     (".tif", "GDAL"), (".tiff", "GDAL"), (".png", "GDAL"), (".jpg", "GDAL"), (".jpeg", "GDAL"),
 ]
 
+NUCLEAR_STAINS = ("dapi", "hoechst")
+TYPE_RANGE = {"uint8": 255.0, "uint16": 65535.0}
+DEFAULT_OFFSET = 0.02       # of the channel type's range
 TISSUE = "tissue"
 NUCLEI = "nuclei"
 ASSUMED_PIXEL_UM = 0.25
@@ -108,10 +132,33 @@ def parse_roi(text):
     return x, y, w, h
 
 
-def tissue_stage(level, minimum_area_px):
-    spec = PipelineSpec(analysis_level=level).add(
-        "segment.tissue_detect", saturationThreshold=0.07, closingRadiusPx=2,
-        minimumRegionAreaPx=minimum_area_px)
+def nuclear_channel(scene, text):
+    """The index of the nuclear channel: --nuclear-channel as an index or a name, else the
+    one channel whose name contains DAPI or Hoechst."""
+    names = [scene.get_channel_name(i) or "" for i in range(scene.num_channels)]
+    listed = ", ".join(f"{i}: {n or '(unnamed)'}" for i, n in enumerate(names))
+    if text is None:
+        found = [i for i, n in enumerate(names) if any(s in n.lower() for s in NUCLEAR_STAINS)]
+        if len(found) != 1:
+            raise SystemExit(f"cannot tell the nuclear channel ({listed}); pass --nuclear-channel")
+        return found[0]
+    if text.isdigit():
+        if int(text) >= scene.num_channels:
+            raise SystemExit(f"--nuclear-channel {text} is out of range ({listed})")
+        return int(text)
+    found = [i for i, n in enumerate(names) if n.lower() == text.lower()]
+    if not found:
+        raise SystemExit(f"no channel named {text!r} ({listed})")
+    return found[0]
+
+
+def tissue_stage(level, mode, minimum_area_px):
+    parameters = {"closingRadiusPx": 2, "minimumRegionAreaPx": minimum_area_px}
+    if mode == "fluorescence":
+        parameters["mode"] = "Fluorescence"     # the triangle cut-off of the channel maximum
+    else:
+        parameters["saturationThreshold"] = 0.07
+    spec = PipelineSpec(analysis_level=level).add("segment.tissue_detect", **parameters)
     return StageDefinition(TISSUE, spec, writes_layers=(TISSUE,))
 
 
@@ -139,15 +186,28 @@ def nuclei_parameters(pixel_um, args):
     }
 
 
-def nuclei_stage(roi, pixel_um, args):
+def nuclei_stage(roi, pixel_um, args, mode, channel=None, offset=None):
     p = nuclei_parameters(pixel_um, args)
     side = 2 * p["opening_radius"] + 1
-    spec = (PipelineSpec(analysis_level=0, roi=roi)
-            # Two planes, hematoxylin then eosin; the chain carries both, and watershed
-            # floods plane 0, the hematoxylin.
-            .add("pixel.stain_deconvolution")
-            .add("pixel.gaussian_blur", sigma=1.0)
-            .add("pixel.threshold_fixed", value=args.hematoxylin_threshold, direction="Above")
+    if mode == "fluorescence":
+        spec = (PipelineSpec(channels=[channel], analysis_level=0, roi=roi)
+                .add("pixel.gaussian_blur", sigma=1.0))
+        if args.nuclear_threshold is not None:
+            spec = spec.add("pixel.threshold_fixed", value=args.nuclear_threshold, direction="Above")
+        else:
+            # threshold = window mean - offset, so a negative offset asks for a pixel
+            # brighter than its surroundings. The window spans the largest nucleus (the
+            # operation takes at most 1025).
+            spec = spec.add("pixel.threshold_adaptive", method="Mean",
+                            blockSize=min(p["spacing"] | 1, 1025), offset=-offset, direction="Above")
+    else:
+        spec = (PipelineSpec(analysis_level=0, roi=roi)
+                # Two planes, hematoxylin then eosin; the chain carries both, and watershed
+                # floods plane 0, the hematoxylin.
+                .add("pixel.stain_deconvolution")
+                .add("pixel.gaussian_blur", sigma=1.0)
+                .add("pixel.threshold_fixed", value=args.hematoxylin_threshold, direction="Above"))
+    spec = (spec
             .add("pixel.fill_holes", maximumHoleSizePx=p["hole_size"])
             .add("pixel.morph_open", shape="Ellipse", elementWidth=side, elementHeight=side,
                  iterations=1)
@@ -163,15 +223,25 @@ def print_progress(name, fraction, done, total):
     print(f"\r{name}: {fraction:6.1%} ({done}/{total} tiles)", end="", file=sys.stderr, flush=True)
 
 
-def save_overlay(scene, roi, geojson_path, png_path, max_width=2000):
-    """Draws the outlines of the GeoJSON export over the region of interest."""
+def save_overlay(scene, roi, geojson_path, png_path, channel=None, max_width=2000):
+    """Draws the outlines of the GeoJSON export over the region of interest. With a nuclear
+    channel, the background is that channel stretched to its 99.5th percentile, as grey."""
     import json
 
+    import numpy as np
     from PIL import Image, ImageDraw
 
     x0, y0, w, _ = roi
     scale = min(1.0, max_width / w)
-    image = Image.fromarray(scene.read_block(roi, size=(int(w * scale), 0))).convert("RGB")
+    size = (int(w * scale), 0)
+    if channel is None:
+        image = Image.fromarray(scene.read_block(roi, size=size)).convert("RGB")
+    else:
+        grey = scene.read_block(roi, size=size, channel_indices=[channel]).astype(np.float64)
+        top = np.percentile(grey, 99.5)
+        if top <= 0:
+            top = max(grey.max(), 1.0)
+        image = Image.fromarray((np.clip(grey / top, 0, 1) * 255).astype(np.uint8)).convert("RGB")
     draw = ImageDraw.Draw(image)
     with open(geojson_path, encoding="utf-8") as f:
         features = json.load(f)["features"]
@@ -186,16 +256,29 @@ def save_overlay(scene, roi, geojson_path, png_path, max_width=2000):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("slide", help="H&E slide file")
+    parser.add_argument("slide", help="H&E or fluorescence slide file")
     parser.add_argument("--driver", help="SlideIO driver (default: from the file extension)")
     parser.add_argument("--scene", type=int, default=0, help="scene index (default 0)")
     parser.add_argument("--workspace", required=True,
                         help="workspace directory; created when missing, reused when it exists")
     parser.add_argument("--out", required=True, help="output directory")
     parser.add_argument("--roi", help="x,y,width,height in level-0 pixels (default: all the tissue)")
+    parser.add_argument("--mode", choices=("brightfield", "fluorescence"),
+                        help="brightfield (H&E) or fluorescence (default: fluorescence when the "
+                             "scene does not have 3 channels, else brightfield)")
     parser.add_argument("--hematoxylin-threshold", type=float, default=0.3,
-                        help="hematoxylin amount (optical density) of a nucleus pixel "
-                             "(default %(default)s)")
+                        help="brightfield only: hematoxylin amount (optical density) of a nucleus "
+                             "pixel (default %(default)s)")
+    parser.add_argument("--nuclear-channel",
+                        help="fluorescence only: the nuclear stain's channel, an index or a name "
+                             "(default: the channel named DAPI or Hoechst)")
+    parser.add_argument("--nuclear-threshold", type=float,
+                        help="fluorescence only: a fixed cut-off on the nuclear channel, in the "
+                             "scene's pixel units, instead of the local cut-off")
+    parser.add_argument("--nuclear-offset", type=float,
+                        help="fluorescence only: how much brighter than the mean of its "
+                             "neighbourhood a nucleus pixel is, in the scene's pixel units "
+                             "(default: 2%% of the channel type's range)")
     parser.add_argument("--nucleus-diameter-um", type=float, default=3.0,
                         help="diameter of the smaller nuclei to find; sets the opening, which "
                              "removes narrower objects, and how close two seeds may be "
@@ -213,8 +296,29 @@ def main(argv=None):
 
     slide = slideio.open_slide(args.slide, args.driver or driver_for(args.slide))
     scene = slide.get_scene(args.scene)
-    if scene.num_channels != 3:
-        raise SystemExit(f"colour deconvolution needs an RGB scene; this one has {scene.num_channels} channels")
+    mode = args.mode or ("brightfield" if scene.num_channels == 3 else "fluorescence")
+    channel = offset = None
+    if mode == "brightfield":
+        if scene.num_channels != 3:
+            raise SystemExit(f"colour deconvolution needs an RGB scene; this one has "
+                             f"{scene.num_channels} channels: use --mode fluorescence")
+        if (args.nuclear_channel, args.nuclear_threshold, args.nuclear_offset) != (None, None, None):
+            raise SystemExit("--nuclear-channel, --nuclear-threshold and --nuclear-offset apply "
+                             "to --mode fluorescence only")
+        print("mode: brightfield", flush=True)
+    else:
+        channel = nuclear_channel(scene, args.nuclear_channel)
+        dtype = str(scene.get_channel_data_type(channel))
+        if args.nuclear_threshold is not None and args.nuclear_offset is not None:
+            raise SystemExit("--nuclear-threshold replaces the local cut-off; drop --nuclear-offset")
+        offset = args.nuclear_offset
+        if offset is None and args.nuclear_threshold is None:
+            if dtype not in TYPE_RANGE:
+                raise SystemExit(f"the nuclear channel is {dtype}: pass --nuclear-offset or "
+                                 f"--nuclear-threshold in its pixel units")
+            offset = DEFAULT_OFFSET * TYPE_RANGE[dtype]
+        print(f"mode: fluorescence, nuclear channel {channel} "
+              f"({scene.get_channel_name(channel) or 'unnamed'}, {dtype})", flush=True)
     roi = parse_roi(args.roi) if args.roi else None
     if args.overlay and roi is None:
         raise SystemExit("--overlay needs --roi: a whole-slide overlay of every nucleus is not readable")
@@ -225,8 +329,8 @@ def main(argv=None):
         pixel_um = ASSUMED_PIXEL_UM
 
     tissue_minimum_px = int(0.05 * 1e6 / (pixel_um * pixel_um))     # 0.05 mm^2
-    definitions = [tissue_stage(coarse_level(scene, 32.0), tissue_minimum_px),
-                   nuclei_stage(roi, pixel_um, args)]
+    definitions = [tissue_stage(coarse_level(scene, 32.0), mode, tissue_minimum_px),
+                   nuclei_stage(roi, pixel_um, args, mode, channel, offset)]
 
     if os.path.isdir(args.workspace) and os.listdir(args.workspace):
         ws = Workspace.open(args.workspace, slide=scene, scene=args.scene)
@@ -273,7 +377,7 @@ def main(argv=None):
 
     if args.overlay:
         save_overlay(scene, roi, os.path.join(args.out, "nuclei.geojson"),
-                     os.path.join(args.out, "nuclei_overlay.png"))
+                     os.path.join(args.out, "nuclei_overlay.png"), channel)
         print(f"wrote {args.out}/nuclei_overlay.png")
 
 
