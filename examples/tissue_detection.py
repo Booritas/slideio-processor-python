@@ -13,13 +13,19 @@ segment.tissue_detect, at a coarse pyramid level, and writes:
                          (with --overlay, needs Pillow) the regions drawn over a
                          thumbnail of the scene
 
-segment.tissue_detect marks a pixel as tissue when its colour is saturated enough
-((max(R,G,B) - min(R,G,B)) / max(R,G,B) > saturation threshold), closes small gaps
-with a disc of --closing-radius pixels at the analysis level, and returns each
-connected region as an object with `area` and `perimeter` in level-0 pixels.
+segment.tissue_detect has two modes. Brightfield (RGB scenes, the default for them)
+marks a pixel as tissue when its colour is saturated enough
+((max(R,G,B) - min(R,G,B)) / max(R,G,B) > saturation threshold). Fluorescence (any other
+channel count, the default for them) marks a pixel as tissue when the maximum over all
+channels exceeds a cut-off: by default the triangle cut-off of the whole-slide histogram,
+or a fixed one with --intensity-threshold (in the scene's pixel units). Either way it
+closes small gaps with a disc of --closing-radius pixels at the analysis level, and returns
+each connected region as an object with `area` and `perimeter` in level-0 pixels.
+Choose the mode with --mode.
 
 Example:
     python tissue_detection.py slide.svs --workspace ws --out out --overlay
+    python tissue_detection.py fluorescence.qptiff --workspace ws --out out --overlay
 
 Slide paths and the slide id end up in logs and export files; keep them in storage
 covered by the deployment's HIPAA Security Rule and GDPR controls, and choose a
@@ -73,12 +79,18 @@ def pixel_size_um(scene):
     return width_m * 1e6 if width_m > 0 else None
 
 
-def tissue_stage(level, saturation, closing_radius, minimum_area_px):
-    spec = PipelineSpec(analysis_level=level).add(
-        "segment.tissue_detect",
-        saturationThreshold=saturation,
-        closingRadiusPx=closing_radius,         # analysis-level pixels
-        minimumRegionAreaPx=minimum_area_px)    # square level-0 pixels
+def tissue_stage(level, mode, saturation, intensity_threshold, closing_radius, minimum_area_px):
+    parameters = {"closingRadiusPx": closing_radius,         # analysis-level pixels
+                  "minimumRegionAreaPx": minimum_area_px}    # square level-0 pixels
+    if mode == "fluorescence":
+        parameters["mode"] = "Fluorescence"
+        if intensity_threshold is not None:
+            parameters["thresholdMethod"] = "Fixed"
+            parameters["intensityThreshold"] = intensity_threshold
+        # else: the default Triangle method; saturationThreshold is refused in this mode
+    else:
+        parameters["saturationThreshold"] = saturation
+    spec = PipelineSpec(analysis_level=level).add("segment.tissue_detect", **parameters)
     return StageDefinition(STAGE, spec, writes_layers=(LAYER,))
 
 
@@ -86,15 +98,26 @@ def print_progress(name, fraction, done, total):
     print(f"\r{name}: {fraction:6.1%} ({done}/{total} tiles)", end="", file=sys.stderr, flush=True)
 
 
-def save_overlay(scene, geojson_path, png_path, width=1500):
+def save_overlay(scene, geojson_path, png_path, mode, width=1500):
     """Draws the tissue polygons of the GeoJSON export over a thumbnail of the scene:
-    outer boundaries green, holes yellow."""
+    outer boundaries green, holes yellow. A fluorescence thumbnail is the channel maximum,
+    stretched to its 99.5th percentile, as grey."""
     import json
 
+    import numpy as np
     from PIL import Image, ImageDraw
 
     scale = width / scene.rect[2]
-    image = Image.fromarray(scene.read_block(size=(width, 0))).convert("RGB")
+    block = scene.read_block(size=(width, 0))
+    if mode == "fluorescence":
+        grey = block.max(axis=2) if block.ndim == 3 else block
+        grey = grey.astype(np.float64)
+        top = np.percentile(grey, 99.5)
+        if top <= 0:
+            top = max(grey.max(), 1.0)
+        image = Image.fromarray((np.clip(grey / top, 0, 1) * 255).astype(np.uint8)).convert("RGB")
+    else:
+        image = Image.fromarray(block).convert("RGB")
     draw = ImageDraw.Draw(image)
     with open(geojson_path, encoding="utf-8") as f:
         features = json.load(f)["features"]
@@ -121,6 +144,12 @@ def main(argv=None):
     parser.add_argument("--level", type=int, help="analysis level; overrides --downsample")
     parser.add_argument("--saturation", type=float, default=0.07,
                         help="saturation threshold from 0 to 1 (default 0.07)")
+    parser.add_argument("--mode", choices=("brightfield", "fluorescence"),
+                        help="detection mode (default: fluorescence when the scene does not "
+                             "have 3 channels, else brightfield)")
+    parser.add_argument("--intensity-threshold", type=float,
+                        help="fluorescence only: a fixed cut-off on the channel maximum, in the "
+                             "scene's pixel units, instead of the triangle cut-off")
     parser.add_argument("--closing-radius", type=int, default=2,
                         help="closing radius in analysis-level pixels, 0 to 127 (default 2)")
     parser.add_argument("--min-area-mm2", type=float, default=0.05,
@@ -133,8 +162,12 @@ def main(argv=None):
 
     slide = slideio.open_slide(args.slide, args.driver or driver_for(args.slide))
     scene = slide.get_scene(args.scene)
-    if scene.num_channels != 3:
-        raise SystemExit(f"segment.tissue_detect needs an RGB scene; this one has {scene.num_channels} channels")
+    mode = args.mode or ("brightfield" if scene.num_channels == 3 else "fluorescence")
+    if mode == "brightfield" and args.intensity_threshold is not None:
+        raise SystemExit("--intensity-threshold applies to --mode fluorescence only")
+    if mode == "brightfield" and scene.num_channels != 3:
+        raise SystemExit(f"brightfield mode needs an RGB scene; this one has {scene.num_channels} channels")
+    print(f"mode: {mode}", flush=True)
 
     level = args.level if args.level is not None else choose_level(scene, args.downsample)
     pixel_um = pixel_size_um(scene)
@@ -144,7 +177,8 @@ def main(argv=None):
     else:
         print("the slide reports no pixel size: --min-area-mm2 is ignored", file=sys.stderr)
 
-    definition = tissue_stage(level, args.saturation, args.closing_radius, minimum_area_px)
+    definition = tissue_stage(level, mode, args.saturation, args.intensity_threshold,
+                             args.closing_radius, minimum_area_px)
     if os.path.isdir(args.workspace) and os.listdir(args.workspace):
         ws = Workspace.open(args.workspace, slide=scene, scene=args.scene)
     else:
@@ -189,7 +223,7 @@ def main(argv=None):
 
     if args.overlay:
         save_overlay(scene, os.path.join(args.out, "tissue.geojson"),
-                     os.path.join(args.out, "tissue_overlay.png"))
+                     os.path.join(args.out, "tissue_overlay.png"), mode)
         print(f"wrote {args.out}/tissue_overlay.png")
 
 

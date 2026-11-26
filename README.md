@@ -45,7 +45,9 @@ Scripts in [`examples/`](examples) run on one slide scene and write GeoJSON, CSV
 pipeline file for `slideio-processor run`; `--overlay` (with Pillow) draws the result.
 
 - [`tissue_detection.py`](examples/tissue_detection.py): the tissue regions of a slide with
-  the built-in `segment.tissue_detect` at a coarse pyramid level.
+  the built-in `segment.tissue_detect` at a coarse pyramid level, for brightfield (RGB) and
+  fluorescence (any channel count) slides; `--mode` picks one, by default from the channel
+  count.
   `python tissue_detection.py slide.svs --workspace ws --out out --overlay`
 - [`nucleus_segmentation.py`](examples/nucleus_segmentation.py): nuclei of an H&E slide at
   full resolution, restricted to the tissue, from built-in operations only (stain
