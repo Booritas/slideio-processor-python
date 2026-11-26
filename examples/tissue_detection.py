@@ -13,15 +13,18 @@ segment.tissue_detect, at a coarse pyramid level, and writes:
                          (with --overlay, needs Pillow) the regions drawn over a
                          thumbnail of the scene
 
-segment.tissue_detect has two modes. Brightfield (RGB scenes, the default for them)
-marks a pixel as tissue when its colour is saturated enough
-((max(R,G,B) - min(R,G,B)) / max(R,G,B) > saturation threshold). Fluorescence (any other
-channel count, the default for them) marks a pixel as tissue when the maximum over all
-channels exceeds a cut-off: by default the triangle cut-off of the whole-slide histogram,
-or a fixed one with --intensity-threshold (in the scene's pixel units). Either way it
-closes small gaps with a disc of --closing-radius pixels at the analysis level, and returns
-each connected region as an object with `area` and `perimeter` in level-0 pixels.
-Choose the mode with --mode.
+segment.tissue_detect has two modes; choose one with --mode, which by default follows
+the channel count. Brightfield (the default for 3-channel scenes) marks a pixel as tissue
+when its colour is saturated enough
+((max(R,G,B) - min(R,G,B)) / max(R,G,B) > --saturation). Fluorescence (the default for
+any other channel count) marks a pixel as tissue when the maximum over all channels
+exceeds a cut-off: by default the triangle cut-off of the whole-slide histogram, or a
+fixed one with --intensity-threshold (in the scene's pixel units). A 3-channel
+fluorescence slide needs --mode fluorescence, since 3 channels default to brightfield.
+The triangle cut-off needs 8- or 16-bit pixels, so a Float32 scene needs
+--intensity-threshold. Either way it closes small gaps with a disc of --closing-radius
+pixels at the analysis level, and returns each connected region as an object with `area`
+and `perimeter` in level-0 pixels.
 
 Example:
     python tissue_detection.py slide.svs --workspace ws --out out --overlay
@@ -143,13 +146,16 @@ def main(argv=None):
                         help="target downsample of the analysis level (default 32)")
     parser.add_argument("--level", type=int, help="analysis level; overrides --downsample")
     parser.add_argument("--saturation", type=float, default=0.07,
-                        help="saturation threshold from 0 to 1 (default 0.07)")
+                        help="brightfield only: saturation threshold from 0 to 1 (default 0.07); "
+                             "ignored in fluorescence mode")
     parser.add_argument("--mode", choices=("brightfield", "fluorescence"),
                         help="detection mode (default: fluorescence when the scene does not "
-                             "have 3 channels, else brightfield)")
+                             "have 3 channels, else brightfield); a 3-channel fluorescence "
+                             "slide needs --mode fluorescence")
     parser.add_argument("--intensity-threshold", type=float,
                         help="fluorescence only: a fixed cut-off on the channel maximum, in the "
-                             "scene's pixel units, instead of the triangle cut-off")
+                             "scene's pixel units, instead of the triangle cut-off; required "
+                             "for Float32 scenes, since the triangle needs 8- or 16-bit pixels")
     parser.add_argument("--closing-radius", type=int, default=2,
                         help="closing radius in analysis-level pixels, 0 to 127 (default 2)")
     parser.add_argument("--min-area-mm2", type=float, default=0.05,
