@@ -14,6 +14,10 @@ python -m pip install --no-deps --force-reinstall dist/slideio_processor-0.1.0-*
 cd <an empty directory outside the checkout>; python -m pytest <repo>/tests -v
 ```
 
+- `./build.sh` (Git Bash, Linux, macOS) runs `build_deps.py` once and builds one wheel per
+  Python: every 3.9–3.15 it finds, or only `--python 3.12` (repeatable; a version or an
+  interpreter path). `--test-helpers`, `--skip-deps`, `-o <dir>`; see `./build.sh --help`.
+  `setup.py` keeps one CMake tree per interpreter (`build/cmake-cpython-312`, ...).
 - `build_deps.py` prepares SlideIO and the Conan dependencies and writes `build/deps.json`.
   Without `SLIDEIO_INSTALL_DIR` it builds SlideIO from the nested submodule into
   `build/slideio-install` (slow). `setup.py` fails until `build/deps.json` exists.

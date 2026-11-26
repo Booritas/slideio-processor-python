@@ -20,7 +20,9 @@ from setuptools.command.build_ext import build_ext
 ROOT = os.path.dirname(os.path.abspath(__file__))
 BUILD_DIR = os.path.join(ROOT, "build")
 DEPS_FILE = os.path.join(BUILD_DIR, "deps.json")
-CMAKE_BUILD_DIR = os.path.join(BUILD_DIR, "cmake")
+# One CMake tree per interpreter (build/cmake-cpython-312, ...): FindPython caches what it
+# found, so a tree configured for one Python must not be reused for another.
+CMAKE_BUILD_DIR = os.path.join(BUILD_DIR, "cmake-" + sys.implementation.cache_tag)
 SLIDEIO_DEF = os.path.join(ROOT, "extern", "slideio-processor", "extern", "slideio", "src", "slideio",
                            "slideio", "slideio_def.hpp")
 NATIVE_TARGET = "slideio_processor_native"
