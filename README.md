@@ -39,6 +39,22 @@ The slide id is the identifier the CSV and GeoJSON exports carry; the default is
 means they carry none. Pass `--slide-id` to identify the slide there. Choose an id that is not
 patient-identifying.
 
+## Examples
+
+Scripts in [`examples/`](examples) run on one slide scene and write GeoJSON, CSV and a
+pipeline file for `slideio-processor run`; `--overlay` (with Pillow) draws the result.
+
+- [`tissue_detection.py`](examples/tissue_detection.py): the tissue regions of a slide with
+  the built-in `segment.tissue_detect` at a coarse pyramid level.
+  `python tissue_detection.py slide.svs --workspace ws --out out --overlay`
+- [`nucleus_segmentation.py`](examples/nucleus_segmentation.py): nuclei of an H&E slide at
+  full resolution, restricted to the tissue, from built-in operations only (stain
+  deconvolution, threshold, hole filling, opening, distance transform, watershed). Try it on a
+  region first: `python nucleus_segmentation.py slide.svs --workspace ws --out out
+  --roi 2200,4500,1000,1000 --overlay`
+
+Each script's docstring explains its parameters; `--help` lists them.
+
 ## Python operations
 
 Subclass `Operation` to run your own code tile by tile inside a pipeline file. Defining the
