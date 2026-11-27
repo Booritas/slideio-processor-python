@@ -16,6 +16,9 @@ Runs two stages in one workspace, both from the library's built-in operations:
            then, either way:
              pixel.fill_holes            pale nuclear centres filled
              pixel.morph_open            specks, thin lines and spurs removed
+             pixel.remove_large_objects  brightfield only (--keep-large-areas leaves it out):
+                                         stained areas wider or taller than the largest
+                                         nucleus removed
              pixel.distance_transform    a peak inside each nucleus, a dip where two touch
              segment.watershed           one marker per peak, touching nuclei split at the dips
            The library runs the chain tile by tile on all cores and delivers each nucleus
@@ -39,9 +42,19 @@ the typical nucleus diameter, the largest nucleus, and the smallest kept. segmen
 refuses, and so fails the whole run, any foreground no marker within maximumMarkerSpacingPx
 reaches, since a tile could not decide it. The chain is set up so that this does not happen
 on nuclei (see nuclei_parameters): the opening removes what would get no marker, and the
-spacing covers the largest nucleus. A stained area larger than --max-nucleus-size-um that is
-not a clump of nuclei (a fold, a dark artefact) still fails the run, and the message names a
-pixel in it: look at it, then exclude it with --roi or raise --max-nucleus-size-um.
+spacing covers the largest nucleus, so a clump of touching nuclei, each with its own peak,
+is split rather than refused.
+
+A stained area larger than --max-nucleus-size-um that is not a clump of nuclei (a fold, a
+keratin band, a dark artefact) is another matter. In brightfield mode
+pixel.remove_large_objects removes every connected stained area wider or taller than that
+before the distance transform. Such an area is removed whole, with any nucleus touching it,
+even at a corner, and so is a clump of touching nuclei wider than that: if the threshold is
+far too low, nuclei merge into large areas and disappear rather than failing the run.
+Compare the nucleus count on an overlay when changing it. --keep-large-areas leaves the step
+out. Fluorescence mode leaves it out, since there packed nuclei often touch: a large bright
+area there fails the run, and the message names a pixel in it; look at it, then exclude it
+with --roi or raise --max-nucleus-size-um.
 
 --mode picks brightfield or fluorescence, by default from the channel count as in
 tissue_detection.py: 3 channels are brightfield, any other count fluorescence (a 3-channel
@@ -210,7 +223,14 @@ def nuclei_stage(roi, pixel_um, args, mode, channel=None, offset=None):
     spec = (spec
             .add("pixel.fill_holes", maximumHoleSizePx=p["hole_size"])
             .add("pixel.morph_open", shape="Ellipse", elementWidth=side, elementHeight=side,
-                 iterations=1)
+                 iterations=1))
+    if mode == "brightfield" and args.large_areas != "keep":
+        # A stained area wider or taller than the largest nucleus (a fold, a keratin band)
+        # would get one marker it cannot be covered by, and fail the run; removing it keeps
+        # every remaining object within the watershed's marker spacing. It also removes a
+        # clump of touching nuclei that wide, which is why fluorescence leaves it out.
+        spec = spec.add("pixel.remove_large_objects", maximumObjectSizePx=p["spacing"])
+    spec = (spec
             .add("pixel.distance_transform", maximumDistancePx=p["distance_cap"])
             .add("segment.watershed", minimumMarkerDistancePx=p["marker_distance"],
                  maximumMarkerSpacingPx=p["spacing"], minimumMarkerValue=p["marker_floor"],
@@ -284,8 +304,17 @@ def main(argv=None):
                              "removes narrower objects, and how close two seeds may be "
                              "(default %(default)s um)")
     parser.add_argument("--max-nucleus-size-um", type=float, default=15.0,
-                        help="largest width or height of a nucleus; a larger stained area fails "
-                             "the run (default %(default)s um)")
+                        help="largest width or height of a nucleus; a larger stained area is "
+                             "removed in brightfield mode and fails the run in fluorescence "
+                             "mode (default %(default)s um)")
+    large = parser.add_mutually_exclusive_group()
+    large.add_argument("--remove-large-areas", dest="large_areas", action="store_const",
+                       const="remove",
+                       help="brightfield only: remove stained areas larger than "
+                            "--max-nucleus-size-um, with nuclei touching them (the default)")
+    large.add_argument("--keep-large-areas", dest="large_areas", action="store_const",
+                       const="keep",
+                       help="brightfield only: keep them; such an area fails the run")
     parser.add_argument("--min-area-um2", type=float, default=5.0,
                         help="drop nuclei smaller than this (default %(default)s um^2)")
     parser.add_argument("--slide-id", default="",
@@ -307,6 +336,9 @@ def main(argv=None):
                              "to --mode fluorescence only")
         print("mode: brightfield", flush=True)
     else:
+        if args.large_areas is not None:
+            raise SystemExit("--remove-large-areas and --keep-large-areas apply to "
+                             "--mode brightfield only")
         channel = nuclear_channel(scene, args.nuclear_channel)
         dtype = str(scene.get_channel_data_type(channel))
         if args.nuclear_threshold is not None and args.nuclear_offset is not None:

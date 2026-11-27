@@ -52,7 +52,8 @@ pipeline file for `slideio-processor run`; `--overlay` (with Pillow) draws the r
 - [`nucleus_segmentation.py`](examples/nucleus_segmentation.py): nuclei of an H&E or a
   fluorescence slide at full resolution, restricted to the tissue, from built-in operations
   only (stain deconvolution for H&E or the nuclear channel, DAPI or Hoechst, for fluorescence;
-  threshold, hole filling, opening, distance transform, watershed). `--mode` picks one, by
+  threshold, hole filling, opening, for H&E removal of stained areas larger than a nucleus,
+  distance transform, watershed). `--mode` picks one, by
   default from the channel count, as in `tissue_detection.py`; `--nuclear-channel` names the
   nuclear channel when it is not called DAPI or Hoechst. Try it on a region first:
   `python nucleus_segmentation.py slide.svs --workspace ws --out out
