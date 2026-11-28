@@ -1,8 +1,8 @@
 name: Build
 
 # Builds the wheel with the test helpers, installs it next to the pinned slideio wheel and
-# runs the test suite from outside the checkout, then checks the pins against the SlideIO
-# repository. The toolchain setup follows extern/slideio-processor's build-validation.yml.
+# runs the test suite from outside the checkout, then checks the pins against the slideio-dist
+# repository the slideio wheel comes from. The toolchain setup follows extern/slideio-processor's build-validation.yml.
 on:
   push:
     branches: [main]

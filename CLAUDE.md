@@ -31,7 +31,9 @@ cd <an empty directory outside the checkout>; python -m pytest <repo>/tests -v
 
 - `python scripts/check_pins.py` checks that the `slideio==X.Y.Z` pin in `pyproject.toml`
   equals `SLIDEIO_VERSION` of the nested SlideIO (`extern/slideio-processor/extern/slideio`);
-  `--online` also checks that tag `vX.Y.Z` of `Booritas/slideio` is the nested submodule commit.
+  `--online` also checks that `Booritas/slideio-dist` has branch `X.Y.Z` and that its last
+  commit is no older than the nested SlideIO submodule commit (the wheels are republished
+  under the same version when SlideIO master moves; the `vX.Y.Z` tag may lag behind).
 - `.github/workflows/build.yml` builds the wheel with `SLIDEIO_PROCESSOR_PYTHON_TEST_HELPERS=1`
   on Windows (`windows-2022`), manylinux_2_28 x86_64 and macOS arm64 (`macos-15`, as the
   processor's own CI), runs the tests from outside the checkout and then
